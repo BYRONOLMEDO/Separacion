@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="utf-8" />
-<title>Mosaico 16 Lila – PyScript + PIL + NumPy</title>
+<title>Extracción de 16 cuadrados morado-lila – PyScript</title>
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 
 <!-- PyScript -->
@@ -16,17 +16,34 @@ packages = ["pillow", "numpy"]
 <style>
 body{
   margin:0;
-  font-family:system-ui;
+  font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
   background:#0b1220;
   color:#e5e7eb;
 }
-.wrap{max-width:1200px;margin:0 auto;padding:16px}
+.wrap{
+  max-width:1200px;
+  margin:0 auto;
+  padding:16px;
+}
+h1{
+  font-size:1.4rem;
+  margin-bottom:8px;
+}
 .card{
   background:#0f172a;
   border-radius:14px;
   border:1px solid rgba(148,163,184,.4);
   padding:14px;
   margin-top:12px;
+}
+.row{
+  display:flex;
+  flex-wrap:wrap;
+  gap:10px;
+  align-items:center;
+}
+input[type=file]{
+  display:none;
 }
 .btn{
   padding:8px 14px;
@@ -35,10 +52,24 @@ body{
   background:#0f172a;
   color:#e5e7eb;
   cursor:pointer;
+  font-size:.95rem;
 }
 .btn.primary{border-color:#38bdf8}
 .btn.warn{border-color:#fbbf24}
 .btn.ok{border-color:#22c55e}
+.status{
+  color:#a5b4fc;
+  font-size:.9rem;
+  margin-top:6px;
+}
+.badge{
+  padding:2px 8px;
+  border-radius:999px;
+  border:1px solid rgba(148,163,184,.7);
+  font-size:.8rem;
+  color:#a5b4fc;
+  margin-left:4px;
+}
 img.preview{
   max-width:100%;
   border-radius:10px;
@@ -51,31 +82,38 @@ img.preview{
 <body>
 <div class="wrap">
 
-<h2>Mosaico 16 Rectángulos Morado‑Lila (PyScript)</h2>
+  <h1>Extracción de 16 cuadrados morado-lila → mosaico 4×4 (PyScript)</h1>
+  <p>Versión web de tu programa de Colab: sube un JPG, detecta parches lila y arma un mosaico 4×4 descargable.</p>
 
-<div class="card">
-  <input type="file" id="fileInput" accept="image/*" class="btn primary" />
-  <button id="btnProcess" class="btn warn">Procesar (buscar 16)</button>
-  <button id="btnDownload" class="btn ok">Descargar mosaico</button>
+  <!-- PANEL PRINCIPAL -->
+  <div class="card">
+    <div class="row">
+      <label class="btn primary">
+        <input id="fileInput" type="file" accept="image/*" />
+        Subir JPG
+      </label>
+      <button id="btnProcess" class="btn warn">Procesar (buscar 16)</button>
+      <button id="btnExport" class="btn ok">Descargar mosaico</button>
+      <span id="info" class="badge">0 parches</span>
+    </div>
+    <div id="status" class="status">Estado: esperando imagen…</div>
+  </div>
 
-  <div id="status" style="margin-top:10px;color:#a5b4fc">Estado: esperando imagen...</div>
+  <!-- ORIGINAL -->
+  <div class="card">
+    <h2 style="font-size:1.05rem;margin-top:0">Original</h2>
+    <img id="imgOriginal" class="preview" alt="Imagen original" />
+  </div>
+
+  <!-- MOSAICO -->
+  <div class="card">
+    <h2 style="font-size:1.05rem;margin-top:0">Mosaico 4×4 (hasta 16 parches)</h2>
+    <img id="imgMosaic" class="preview" alt="Mosaico 4×4" />
+  </div>
+
 </div>
 
-<div class="card">
-  <h3>Original</h3>
-  <img id="orig" class="preview" />
-</div>
-
-<div class="card">
-  <h3>Mosaico 4×4</h3>
-  <img id="mosaic" class="preview" />
-</div>
-
-</div>
-
-<!-- ================================================================
-     PYTHON (PYSCRIPT) — CON PIL + NUMPY — CONVIERTO TODO TU COLAB
-================================================================== -->
+<!-- ======================== PYTHON (PyScript) ======================== -->
 <py-script>
 import io, math, base64
 import numpy as np
@@ -83,232 +121,249 @@ from PIL import Image
 from js import document, FileReader, Uint8Array, window
 from pyodide.ffi import create_proxy
 
-# ------------------ UI ELEMENTOS ------------------
+# ----------------------------- UI helpers -----------------------------
 status_el = document.getElementById("status")
-orig_el   = document.getElementById("orig")
-mosaic_el = document.getElementById("mosaic")
+info_el = document.getElementById("info")
+img_orig_el = document.getElementById("imgOriginal")
+img_mosaic_el = document.getElementById("imgMosaic")
 
-def set_status(msg):
+def set_status(msg: str):
     status_el.innerText = "Estado: " + msg
 
-def pil_to_dataurl(pil_img, fmt="PNG"):
+def pil_to_data_url(pil_img: Image.Image, fmt="PNG") -> str:
     buff = io.BytesIO()
     pil_img.save(buff, format=fmt)
-    b64 = base64.b64encode(buff.getvalue()).decode()
-    return f"data:image/{fmt.lower()};base64,{b64}"
+    b64 = base64.b64encode(buff.getvalue()).decode("ascii")
+    return f"data:image/{fmt.lower()};base64," + b64
 
+# ------------------------- Estado global ---------------------------
 STATE = {
     "name": "imagen",
-    "img": None,
-    "mosaic": None
+    "img": None,      # PIL.Image
+    "mosaic": None    # PIL.Image
 }
 
-# ---------------------- (TODO TU CÓDIGO EXACTO) ----------------------
+# ---------------------- Utilidades de color -----------------------
 def deg_to_pil_h(deg: float) -> int:
     deg = deg % 360.0
     return int(round((deg/360.0)*255.0))
 
 def mask_lilac_pil(img_pil, HSV_H_RANGE=(235, 335), S_MIN_PCT=10, V_MIN_PCT=10):
+    """Máscara booleana para morado/lila en HSV con afinado por mediana."""
     hsv = img_pil.convert("HSV")
     hsv_np = np.array(hsv, dtype=np.uint8)
-    H = hsv_np[...,0].astype(np.int16)
-    S = hsv_np[...,1].astype(np.int16)
-    V = hsv_np[...,2].astype(np.int16)
+    H = hsv_np[..., 0].astype(np.int16)
+    S = hsv_np[..., 1].astype(np.int16)
+    V = hsv_np[..., 2].astype(np.int16)
 
     hmin0, hmax0 = HSV_H_RANGE
-    smin0_p = int(round(S_MIN_PCT/100*255))
-    vmin0_p = int(round(V_MIN_PCT/100*255))
+    smin0, vmin0 = S_MIN_PCT, V_MIN_PCT
     hmin0_p, hmax0_p = deg_to_pil_h(hmin0), deg_to_pil_h(hmax0)
+    smin0_p = int(round(smin0/100.0*255))
+    vmin0_p = int(round(vmin0/100.0*255))
 
     if hmin0_p <= hmax0_p:
-        h_ok = (H>=hmin0_p) & (H<=hmax0_p)
+        h_ok0 = (H >= hmin0_p) & (H <= hmax0_p)
     else:
-        h_ok = (H>=hmin0_p) | (H<=hmax0_p)
+        h_ok0 = (H >= hmin0_p) | (H <= hmax0_p)
+    s_ok0 = S >= smin0_p
+    v_ok0 = V >= vmin0_p
+    mask0 = h_ok0 & s_ok0 & v_ok0
 
-    s_ok = (S>=smin0_p)
-    v_ok = (V>=vmin0_p)
-    mask0 = h_ok & s_ok & v_ok
-
-    # afinado opcional
+    # Afinado por mediana si hay señal suficiente
     if mask0.sum() >= 50:
-        h_vals = H[mask0]
-        h_deg  = (h_vals*360)/255
+        h_vals = H[mask0].astype(np.int32)
+        h_deg = (h_vals * 360.0) / 255.0
         med = float(np.median(h_deg))
         win = 18.0
-        hmin, hmax = int(med-win), int(med+win)
+        hmin, hmax = int(round(med - win)), int(round(med + win))
         hmin_p, hmax_p = deg_to_pil_h(hmin), deg_to_pil_h(hmax)
-
         if hmin_p <= hmax_p:
-            h_ok = (H>=hmin_p) & (H<=hmax_p)
+            h_ok = (H >= hmin_p) & (H <= hmax_p)
         else:
-            h_ok = (H>=hmin_p) | (H<=hmax_p)
+            h_ok = (H >= hmin_p) | (H <= hmax_p)
+        s_ok = S >= max(smin0_p, int(round((S_MIN_PCT-2)/100.0*255)))
+        v_ok = V >= max(vmin0_p, int(round((V_MIN_PCT-2)/100.0*255)))
         return h_ok & s_ok & v_ok
-
     return mask0
 
 def majority_filter(mask, iters=1, keep_thresh=5):
+    """Filtro 3×3 por mayoría: mantiene píxel si la suma del 3×3 >= keep_thresh."""
     m = mask.astype(np.uint8)
     for _ in range(iters):
-        p = np.pad(m,1)
+        p = np.pad(m, 1, mode="constant")
         s = (
-            p[:-2,:-2] + p[:-2,1:-1] + p[:-2,2:] +
-            p[1:-1,:-2] + p[1:-1,1:-1] + p[1:-1,2:] +
-            p[2:,:-2] + p[2:,1:-1] + p[2:,2:]
+            p[:-2, :-2] + p[:-2, 1:-1] + p[:-2, 2:] +
+            p[1:-1, :-2] + p[1:-1, 1:-1] + p[1:-1, 2:] +
+            p[2:, :-2] + p[2:, 1:-1] + p[2:, 2:]
         )
-        m = (s>=keep_thresh).astype(np.uint8)
+        m = (s >= keep_thresh).astype(np.uint8)
     return m.astype(bool)
 
 def shrink_break(mask, iters=2, keep_thresh=7):
-    return majority_filter(mask, iters, keep_thresh)
+    """‘Erosión’ que rompe puentes finos entre parches pegados."""
+    return majority_filter(mask, iters=iters, keep_thresh=keep_thresh)
 
 def grow_soft(mask, iters=1, keep_thresh=3):
-    return majority_filter(mask, iters, keep_thresh)
+    """Ligera ‘dilatación’ para reconstruir interior tras separar."""
+    return majority_filter(mask, iters=iters, keep_thresh=keep_thresh)
 
+# ---------------------- Etiquetado de componentes -----------------
 def label_components(mask):
-    h,w = mask.shape
-    visited = np.zeros((h,w),bool)
-    labels = np.zeros((h,w),int)
-    neigh = [(-1,0),(1,0),(0,-1),(0,1)]
-    comps=[]
-    current_label=0
-
-    for r,c in np.argwhere(mask):
-        if visited[r,c]: continue
-        current_label+=1
-        q=[(r,c)]
-        visited[r,c]=True
-        labels[r,c]=current_label
-        minr=maxr=r
-        minc=maxc=c
-        area=0
-
+    """BFS 4-conectividad. Devuelve labels y lista de componentes con bbox y área."""
+    h, w = mask.shape
+    labels = np.zeros((h, w), dtype=np.int32)
+    visited = np.zeros((h, w), dtype=bool)
+    comps, label_id = [], 0
+    neigh = [(-1,0), (1,0), (0,-1), (0,1)]
+    for r, c in np.argwhere(mask):
+        if visited[r, c]:
+            continue
+        label_id += 1
+        q = [(r, c)]
+        visited[r, c] = True
+        labels[r, c] = label_id
+        min_r = max_r = r
+        min_c = max_c = c
+        count = 0
         while q:
-            rr,cc = q.pop()
-            area+=1
-            minr=min(minr,rr); maxr=max(maxr,rr)
-            minc=min(minc,cc); maxc=max(maxc,cc)
-            for dr,dc in neigh:
-                nr,nc = rr+dr, cc+dc
-                if 0<=nr<h and 0<=nc<w and mask[nr,nc] and not visited[nr,nc]:
-                    visited[nr,nc]=True
-                    labels[nr,nc]=current_label
-                    q.append((nr,nc))
+            rr, cc = q.pop()
+            count += 1
+            min_r = rr if rr < min_r else min_r
+            max_r = rr if rr > max_r else max_r
+            min_c = cc if cc < min_c else min_c
+            max_c = cc if cc > max_c else max_c
+            for dr, dc in neigh:
+                nr, nc = rr+dr, cc+dc
+                if 0 <= nr < h and 0 <= nc < w and mask[nr, nc] and not visited[nr, nc]:
+                    visited[nr, nc] = True
+                    labels[nr, nc] = label_id
+                    q.append((nr, nc))
         comps.append({
-            "label":current_label,
-            "min_r":minr,"max_r":maxr,
-            "min_c":minc,"max_c":maxc,
-            "area":area
+            "label": label_id,
+            "min_r": min_r, "max_r": max_r,
+            "min_c": min_c, "max_c": max_c,
+            "area": count
         })
     return labels, comps
 
+# ------------------------ Detección de rectángulos ----------------
 PROFILES = [
-    dict(MAX_W_DET=1400, HSV_H_RANGE=(235,335), S_MIN_PCT=10, V_MIN_PCT=10,
-         AREA_MIN_FR=0.00015, AR_MIN=1.30, AR_MAX=3.50,
-         SOLID_MIN=0.28, MAJ_ITERS=2, PADDING_PX=6),
-
-    dict(MAX_W_DET=1600, HSV_H_RANGE=(230,340), S_MIN_PCT=8, V_MIN_PCT=8,
-         AREA_MIN_FR=0.00012, AR_MIN=1.20, AR_MAX=3.80,
-         SOLID_MIN=0.24, MAJ_ITERS=3, PADDING_PX=8),
-
-    dict(MAX_W_DET=1800, HSV_H_RANGE=(225,345), S_MIN_PCT=6, V_MIN_PCT=6,
-         AREA_MIN_FR=0.00008, AR_MIN=1.10, AR_MAX=4.20,
-         SOLID_MIN=0.20, MAJ_ITERS=3, PADDING_PX=10),
+    dict(MAX_W_DET=1400, HSV_H_RANGE=(235, 335), S_MIN_PCT=10, V_MIN_PCT=10,
+         AREA_MIN_FR=0.00015, AR_MIN=1.30, AR_MAX=3.50, SOLID_MIN=0.28,
+         MAJ_ITERS=2, PADDING_PX=6),
+    dict(MAX_W_DET=1600, HSV_H_RANGE=(230, 340), S_MIN_PCT=8, V_MIN_PCT=8,
+         AREA_MIN_FR=0.00012, AR_MIN=1.20, AR_MAX=3.80, SOLID_MIN=0.24,
+         MAJ_ITERS=3, PADDING_PX=8),
+    dict(MAX_W_DET=1800, HSV_H_RANGE=(225, 345), S_MIN_PCT=6, V_MIN_PCT=6,
+         AREA_MIN_FR=0.00008, AR_MIN=1.10, AR_MAX=4.20, SOLID_MIN=0.20,
+         MAJ_ITERS=3, PADDING_PX=10),
 ]
 
 def detect_purple_rects(img):
-    crops_best=[]
+    """Devuelve lista de recortes PIL de los rectángulos morado-lila, ordenados por fila/col."""
+    crops_best = []
+    used_profile = None
     for prof in PROFILES:
-        W0,H0 = img.size
+        W0, H0 = img.size
         scale = 1.0
         img_det = img
-        if W0>prof["MAX_W_DET"]:
-            scale = prof["MAX_W_DET"]/W0
-            img_det = img.resize(
-                (prof["MAX_W_DET"], int(H0*scale)),
-                Image.Resampling.BILINEAR
-            )
-        Wd,Hd = img_det.size
+        if W0 > prof["MAX_W_DET"]:
+            scale = prof["MAX_W_DET"] / float(W0)
+            new_h = int(round(H0 * scale))
+            img_det = img.resize((prof["MAX_W_DET"], new_h), Image.Resampling.BILINEAR)
+        Wd, Hd = img_det.size
 
         mask = mask_lilac_pil(img_det, prof["HSV_H_RANGE"],
                               prof["S_MIN_PCT"], prof["V_MIN_PCT"])
-        mask = majority_filter(mask, prof["MAJ_ITERS"], 5)
+        mask = majority_filter(mask, iters=prof["MAJ_ITERS"], keep_thresh=5)
 
+        # Separar si está todo pegado
         _, comps0 = label_components(mask)
-        if len(comps0)<=2 and any(c["area"]>0.02*(Wd*Hd) for c in comps0):
-            sep = shrink_break(mask, 2,7)
-            sep = grow_soft(sep,1,3)
+        if len(comps0) <= 2 and any(c["area"] > 0.02 * (Wd * Hd) for c in comps0):
+            sep = shrink_break(mask, iters=2, keep_thresh=7)
+            sep = grow_soft(sep, iters=1, keep_thresh=3)
             _, comps_sep = label_components(sep)
-            if len(comps_sep)>len(comps0):
+            if len(comps_sep) > len(comps0):
                 mask = sep
 
-        _, comps = label_components(mask)
-        if not comps: continue
+        labels, comps = label_components(mask)
+        if not comps:
+            continue
 
-        det_area = Wd*Hd
-        tiles=[]
+        det_area = Wd * Hd
+        tiles = []
         for c in comps:
-            area=c["area"]
-            if area < prof["AREA_MIN_FR"]*det_area: continue
+            area = c["area"]
+            if area < prof["AREA_MIN_FR"] * det_area:
+                continue
+            r0, r1 = c["min_r"], c["max_r"]
+            c0, c1 = c["min_c"], c["max_c"]
+            bw, bh = c1 - c0 + 1, r1 - r0 + 1
+            if bh <= 0:
+                continue
+            ar = bw / float(bh)
+            if not (prof["AR_MIN"] <= ar <= prof["AR_MAX"]):
+                continue
+            sub = mask[r0:r1+1, c0:c1+1]
+            bbox_area = bw * bh
+            if bbox_area <= 0:
+                continue
+            solidity = sub.sum() / float(bbox_area)
+            if solidity < prof["SOLID_MIN"]:
+                continue
 
-            r0,r1 = c["min_r"], c["max_r"]
-            c0,c1 = c["min_c"], c["max_c"]
-            bw, bh = c1-c0+1, r1-r0+1
-            if bh<=0: continue
+            inv = 1.0 / scale
+            y0 = int(max(0, math.floor(r0 * inv) - prof["PADDING_PX"]))
+            y1 = int(min(H0, math.ceil((r1 + 1) * inv) + prof["PADDING_PX"]))
+            x0 = int(max(0, math.floor(c0 * inv) - prof["PADDING_PX"]))
+            x1 = int(min(W0, math.ceil((c1 + 1) * inv) + prof["PADDING_PX"]))
 
-            ar=bw/bh
-            if not(prof["AR_MIN"]<=ar<=prof["AR_MAX"]): continue
-
-            sub=mask[r0:r1+1, c0:c1+1]
-            sol = sub.sum()/(bw*bh)
-            if sol < prof["SOLID_MIN"]: continue
-
-            inv = 1/scale
-            y0 = int(max(0, math.floor(r0*inv)-prof["PADDING_PX"]))
-            y1 = int(min(H0, math.ceil((r1+1)*inv)+prof["PADDING_PX"]))
-            x0 = int(max(0, math.floor(c0*inv)-prof["PADDING_PX"]))
-            x1 = int(min(W0, math.ceil((c1+1)*inv)+prof["PADDING_PX"]))
-
-            crop = img.crop((x0,y0,x1,y1))
-            cx=(x0+x1)/2; cy=(y0+y1)/2
-            tiles.append((cy,cx,crop))
+            crop = img.crop((x0, y0, x1, y1))
+            cx = (x0 + x1) / 2.0
+            cy = (y0 + y1) / 2.0
+            tiles.append((cy, cx, crop))
 
         if tiles:
-            tiles.sort(key=lambda t:(t[0],t[1]))
-            crops=[t[2] for t in tiles]
-            if len(crops)>len(crops_best):
-                crops_best=crops
-
-        if len(crops_best)>=16:
+            tiles.sort(key=lambda t: (t[0], t[1]))  # fila, luego columna
+            crops = [t[2] for t in tiles]
+            if len(crops) > len(crops_best):
+                crops_best, used_profile = crops, prof
+        if len(crops_best) >= 16:
             break
 
-    return crops_best[:16]
+    return crops_best[:], used_profile
 
+# ---------------------- Mosaico 4×4 -----------------------
 def compose_grid_4x4(crops, bg=(255,255,255), margin=12):
-    if not crops:
-        return Image.new("RGB",(500,300),(255,255,255))
+    """Toma hasta 16 recortes, los normaliza a tamaño uniforme y arma un grid 4×4."""
+    n = min(len(crops), 16)
+    if n == 0:
+        return Image.new("RGB", (640, 360), bg)
 
-    ws=[c.size[0] for c in crops]
-    hs=[c.size[1] for c in crops]
-    tw=int(np.median(ws)); th=int(np.median(hs))
-    resized=[c.resize((tw,th),Image.Resampling.BICUBIC) for c in crops]
+    ws = [c.size[0] for c in crops[:n]]
+    hs = [c.size[1] for c in crops[:n]]
+    tw = int(np.median(ws))
+    th = int(np.median(hs))
+    resized = [c.resize((tw, th), Image.Resampling.BICUBIC) for c in crops[:n]]
 
-    rows=4; cols=4
+    rows, cols = 4, 4
     Wc = cols*tw + (cols+1)*margin
     Hc = rows*th + (rows+1)*margin
-    canvas=Image.new("RGB",(Wc,Hc),bg)
+    canvas = Image.new("RGB", (Wc, Hc), bg)
 
-    idx=0
+    idx = 0
     for r in range(rows):
         for c in range(cols):
-            if idx>=len(resized): break
+            if idx >= n:
+                break
             x = margin + c*(tw+margin)
             y = margin + r*(th+margin)
-            canvas.paste(resized[idx], (x,y))
-            idx+=1
-
+            canvas.paste(resized[idx], (x, y))
+            idx += 1
     return canvas
 
-# ---------------------- MANEJO DE ARCHIVO ----------------------
+# ---------------------- Manejo de archivo (input) -----------------
 def on_file_change(event):
     files = event.target.files
     if not files.length:
@@ -316,66 +371,75 @@ def on_file_change(event):
         return
 
     f = files.item(0)
-    STATE["name"] = f.name
-
+    STATE["name"] = f.name or "imagen"
     reader = FileReader.new()
 
-    def onload(e):
+    def onload(ev):
         arr = Uint8Array.new(reader.result)
         data = bytes(arr.to_py())
-        img = Image.open(io.BytesIO(data)).convert("RGB")
+        try:
+            img = Image.open(io.BytesIO(data)).convert("RGB")
+        except Exception as e:
+            set_status(f"Error al abrir imagen: {e}")
+            return
+
         STATE["img"] = img
-        orig_el.src = pil_to_dataurl(img)
-        set_status(f"Imagen cargada: {img.size[0]}×{img.size[1]}")
+        img_orig_el.src = pil_to_data_url(img, "PNG")
+        set_status(f"Imagen cargada: {STATE['name']} — {img.size[0]}×{img.size[1]}")
 
     reader.onload = create_proxy(onload)
     reader.readAsArrayBuffer(f)
 
-document.getElementById("fileInput").addEventListener(
-    "change", create_proxy(on_file_change)
-)
+file_input = document.getElementById("fileInput")
+file_input.addEventListener("change", create_proxy(on_file_change))
 
-# ---------------------- PROCESAR ----------------------
-def on_process(event):
+# ---------------------- Procesar (buscar 16) ---------------------
+def on_process(_event):
     if STATE["img"] is None:
         set_status("Sube primero un JPG.")
         return
 
-    set_status("Procesando…")
-    crops = detect_purple_rects(STATE["img"])
+    img = STATE["img"]
+    set_status("Procesando: detectando parches morado-lila…")
+    crops, prof = detect_purple_rects(img)
 
     if not crops:
+        info_el.innerText = "0 parches"
+        img_mosaic_el.src = ""
         set_status("No se detectaron parches lila.")
         return
 
+    if len(crops) < 16:
+        set_status(f"Detectados {len(crops)} parches. Se arma mosaico con lo disponible.")
+    else:
+        set_status(f"Detectados {len(crops)} parches. Tomando los 16 primeros por fila/col.")
+
     mosaic = compose_grid_4x4(crops)
-    STATE["mosaic"]=mosaic
-    mosaic_el.src = pil_to_dataurl(mosaic)
-    set_status(f"Mosaico listo ({len(crops)} parches).")
+    STATE["mosaic"] = mosaic
+    img_mosaic_el.src = pil_to_data_url(mosaic, "PNG")
+    info_el.innerText = f"{min(16,len(crops))} parches usados (de {len(crops)})"
 
-document.getElementById("btnProcess").addEventListener(
-    "click", create_proxy(on_process)
-)
+btn_process = document.getElementById("btnProcess")
+btn_process.addEventListener("click", create_proxy(on_process))
 
-# ---------------------- DESCARGAR ----------------------
-def on_download(event):
+# ---------------------- Descargar mosaico ------------------------
+def on_export(_event):
     if STATE["mosaic"] is None:
-        set_status("Primero procesa la imagen.")
+        set_status("No hay mosaico para exportar. Pulsa ‘Procesar (buscar 16)’ primero.")
         return
 
-    dataurl = pil_to_dataurl(STATE["mosaic"],"PNG")
+    data_url = pil_to_data_url(STATE["mosaic"], "PNG")
     a = document.createElement("a")
-    base = STATE["name"].split(".")[0]
+    base = STATE["name"].rsplit(".", 1)[0]
     a.download = f"{base}_mosaico_16_lila.png"
-    a.href = dataurl
+    a.href = data_url
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
-    set_status("Mosaico descargado.")
+    set_status(f"Mosaico descargado como {base}_mosaico_16_lila.png")
 
-document.getElementById("btnDownload").addEventListener(
-    "click", create_proxy(on_download)
-)
+btn_export = document.getElementById("btnExport")
+btn_export.addEventListener("click", create_proxy(on_export))
 
 set_status("Listo. Sube un JPG para comenzar.")
 </py-script>
