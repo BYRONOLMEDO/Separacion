@@ -42,7 +42,7 @@
     }
     .btn.primary{border-color:#38bdf8}
     .btn[disabled]{
-      opacity:.5;
+      opacity:0.5;
       cursor:not-allowed;
     }
     .status{color:#a5b4fc;font-size:.9rem;margin-top:6px}
@@ -80,12 +80,11 @@
       margin-left:4px;
     }
     #mosaicCanvas{
+      display:none;
       margin-top:10px;
-      max-width:100%;
       border-radius:10px;
-      border:1px solid rgba(148,163,184,.3);
-      background:#020617;
-      display:block;
+      border:1px solid rgba(148,163,184,.4);
+      max-width:100%;
     }
   </style>
 </head>
@@ -94,8 +93,9 @@
     <h1>Separación de parches morados — Brython</h1>
     <p>
       Sube una imagen con parches lila/morados. El programa detecta regiones de color
-      morado, las agrupa y genera un mosaico con cada parche separado. Luego puedes
-      descargar el mosaico como una sola imagen PNG.
+      morado usando un criterio tipo HSV + reglas sobre R/G/B, agrupa los píxeles
+      contiguos y genera un mosaico con cada parche separado, además de un mosaico
+      general descargable en PNG.
     </p>
 
     <div class="card">
@@ -105,7 +105,6 @@
           Subir imagen
         </label>
         <button id="btnProcess" class="btn">Procesar morados</button>
-        <button id="btnDownloadMosaic" class="btn" disabled>Descargar mosaico PNG</button>
         <span id="info" class="badge">0 parches</span>
       </div>
       <div id="status" class="status">Estado: esperando imagen…</div>
@@ -115,7 +114,10 @@
     <div class="card">
       <h2 style="font-size:1.05rem;margin-top:0;margin-bottom:4px">Parches morados detectados</h2>
       <div id="patches"></div>
-      <h3 style="font-size:0.95rem;margin-top:14px;margin-bottom:4px">Mosaico combinado</h3>
+
+      <div class="row" style="margin-top:10px">
+        <button id="btnDownloadMosaic" class="btn" disabled>Descargar mosaico (PNG)</button>
+      </div>
       <canvas id="mosaicCanvas"></canvas>
     </div>
 
@@ -130,7 +132,6 @@ import math
 
 file_input = document["fileInput"]
 btn_process = document["btnProcess"]
-btn_download = document["btnDownloadMosaic"]
 status_el = document["status"]
 preview_el = document["preview"]
 patches_el = document["patches"]
@@ -138,24 +139,16 @@ info_el = document["info"]
 src_canvas = document["srcCanvas"]
 src_ctx = src_canvas.getContext("2d")
 mosaic_canvas = document["mosaicCanvas"]
-mosaic_ctx = mosaic_canvas.getContext("2d")
+btn_download = document["btnDownloadMosaic"]
 
-current_img = None
+current_img = None   # referencia al objeto IMG cargado
 image_ready = False
-last_patches = []  # lista de (minx, miny, maxx, maxy, area)
 
 def set_status(text):
     status_el.text = f"Estado: {text}"
 
 def on_file_change(ev):
-    global current_img, image_ready, last_patches
-    last_patches = []
-    btn_download.attrs["disabled"] = "disabled"
-    patches_el.clear()
-    info_el.text = "0 parches"
-    mosaic_canvas.width = 1
-    mosaic_canvas.height = 1
-
+    global current_img, image_ready
     files = ev.target.files
     if not files:
         set_status("No se seleccionó archivo.")
@@ -166,7 +159,6 @@ def on_file_change(ev):
     def onload(e):
         nonlocal f
         img = html.IMG()
-
         def on_img_load(ev2):
             global current_img, image_ready
             current_img = img
@@ -178,6 +170,8 @@ def on_file_change(ev):
             src_canvas.height = h
             src_ctx.drawImage(img, 0, 0)
             set_status(f"Imagen cargada ({w}×{h}). Listo para procesar morados.")
+            btn_download.disabled = True
+            mosaic_canvas.style.display = "none"
         img.bind("load", on_img_load)
         img.src = e.target.result
 
@@ -188,56 +182,54 @@ def on_file_change(ev):
 file_input.bind("change", on_file_change)
 
 def rgb_to_hsv(r, g, b):
-    """Convierte RGB [0-255] a HSV (h en grados, s y v [0-1])."""
-    r_ = r / 255.0
-    g_ = g / 255.0
-    b_ = b / 255.0
-    cmax = max(r_, g_, b_)
-    cmin = min(r_, g_, b_)
-    diff = cmax - cmin
+    """Conversión simple RGB → HSV (0-360, 0-1, 0-1)."""
+    r_f = r / 255.0
+    g_f = g / 255.0
+    b_f = b / 255.0
 
+    mx = max(r_f, g_f, b_f)
+    mn = min(r_f, g_f, b_f)
+    diff = mx - mn
+
+    # Hue
     if diff == 0:
         h = 0.0
-    elif cmax == r_:
-        h = (60 * ((g_ - b_) / diff) + 360) % 360
-    elif cmax == g_:
-        h = (60 * ((b_ - r_) / diff) + 120) % 360
+    elif mx == r_f:
+        h = (60 * ((g_f - b_f) / diff) + 360) % 360
+    elif mx == g_f:
+        h = (60 * ((b_f - r_f) / diff) + 120) % 360
     else:
-        h = (60 * ((r_ - g_) / diff) + 240) % 360
+        h = (60 * ((r_f - g_f) / diff) + 240) % 360
 
-    s = 0.0 if cmax == 0 else diff / cmax
-    v = cmax
+    # Saturation
+    s = 0.0 if mx == 0 else diff / mx
+    v = mx
     return h, s, v
 
 def is_purple(r, g, b):
     """
-    Criterio mejorado de morado/lila usando HSV + reglas de relación.
-    Ajustado pensando en parches lila con mancha dentro.
+    Criterio robusto de lila/morado.
+    Portado de la lógica que usábamos en JS (HSV + heurísticas RGB).
+    Ajustado a las típicas telas/parches lila-morados.
     """
     h, s, v = rgb_to_hsv(r, g, b)
 
-    # 1) Rango de tono típico de morado-lila
-    if not (250 <= h <= 330):
-        return False
+    # 1) Hue entre 255° y 335° (zona violeta-magenta), con algo de saturación y brillo
+    if (255 <= h <= 335) and s > 0.12 and v > 0.12:
+        return True
 
-    # 2) Saturación moderada y valor no muy bajo
-    if s < 0.18 or v < 0.25:
-        return False
+    # 2) Regla RGB: saturación moderada, rojo > azul > verde, verde algo más bajo
+    if s > 0.10 and r > b and g < r and b > g * 0.9:
+        return True
 
-    # 3) Refuerzo en RGB: R y B relativamente altos y G algo más bajo
-    if r + b < 180:  # evita azules/violetas demasiado oscuros globalmente
-        return False
-    if g >= r or g >= b:
-        return False
+    # 3) Regla de refuerzo: R y B altos, G más bajo, suma R+B fuerte
+    if r > 80 and b > 80 and (r + b) > 220 and r > g * 1.05:
+        return True
 
-    # 4) Evitar rojos puros
-    if r > 220 and b < 100:
-        return False
-
-    return True
+    return False
 
 def process_purple(ev):
-    global image_ready, last_patches
+    global image_ready
     if not image_ready:
         window.alert("Primero sube una imagen.")
         return
@@ -248,15 +240,16 @@ def process_purple(ev):
         set_status("Canvas vacío.")
         return
 
-    set_status("Procesando morados… (puede tardar unos segundos)")
+    set_status("Procesando morados… (esto puede tardar unos segundos)")
     patches_el.clear()
-    btn_download.attrs["disabled"] = "disabled"
-    mosaic_canvas.width = 1
-    mosaic_canvas.height = 1
+    info_el.text = "0 parches"
+    btn_download.disabled = True
+    mosaic_canvas.style.display = "none"
 
     img_data = src_ctx.getImageData(0, 0, w, h)
     data = img_data.data
 
+    # Máscara binaria: 1 si morado
     mask = [0] * (w * h)
     for y in range(h):
         base = y * w
@@ -269,6 +262,7 @@ def process_purple(ev):
             if is_purple(r, g, b):
                 mask[idx] = 1
 
+    # Componentes conectados 4-neighbors
     visited = [0] * (w * h)
     patches = []
     dirs = [(1,0),(-1,0),(0,1),(0,-1)]
@@ -278,7 +272,6 @@ def process_purple(ev):
             idx0 = y*w + x
             if mask[idx0] == 0 or visited[idx0] == 1:
                 continue
-
             queue = [(x, y)]
             visited[idx0] = 1
             minx = x; maxx = x
@@ -302,7 +295,7 @@ def process_purple(ev):
                             visited[idxn] = 1
                             queue.append((nx, ny))
 
-            # Filtrar componentes pequeños (ajustable)
+            # Filtrar componentes demasiado pequeños
             if area < 80:
                 continue
             patches.append((minx, miny, maxx, maxy, area))
@@ -310,13 +303,14 @@ def process_purple(ev):
     if not patches:
         set_status("No se detectaron parches morados con el criterio actual.")
         info_el.text = "0 parches"
-        last_patches = []
         return
 
+    # Ordenar por posición: primero arriba-abajo, luego izquierda-derecha
     patches_sorted = sorted(patches, key=lambda p: (p[1], p[0]))
-    last_patches = patches_sorted
 
-    # Mostrar parches individuales
+    patch_canvases = []
+
+    # Crear un canvas por parche y mostrarlo
     for i, (minx, miny, maxx, maxy, area) in enumerate(patches_sorted, start=1):
         pw = maxx - minx + 1
         ph = maxy - miny + 1
@@ -325,6 +319,7 @@ def process_purple(ev):
         c.height = ph
         ctx = c.getContext("2d")
         ctx.drawImage(src_canvas, minx, miny, pw, ph, 0, 0, pw, ph)
+
         cont = html.DIV(Class="patch")
         cont <= c
         label = html.DIV(
@@ -337,77 +332,33 @@ def process_purple(ev):
         )
         cont <= label
         patches_el <= cont
+        patch_canvases.append(c)
 
     info_el.text = f"{len(patches_sorted)} parches"
     set_status(f"Listo. Detectados {len(patches_sorted)} parches morados.")
-    build_mosaic(patches_sorted)
-    # Habilitar botón de descarga
-    if "disabled" in btn_download.attrs:
-        del btn_download.attrs["disabled"]
 
-def build_mosaic(patches_sorted):
-    """
-    Construye un mosaico con todos los parches morados en un solo canvas.
-    Los organiza en una cuadrícula de hasta 4 columnas.
-    """
-    if not patches_sorted:
-        mosaic_canvas.width = 1
-        mosaic_canvas.height = 1
-        return
-
-    # Determinar tamaños máximos
-    widths = []
-    heights = []
-    for (minx, miny, maxx, maxy, area) in patches_sorted:
-        widths.append(maxx - minx + 1)
-        heights.append(maxy - miny + 1)
-    max_w = max(widths)
-    max_h = max(heights)
-
-    # Definir cuadrícula
-    n = len(patches_sorted)
-    cols = min(4, n)  # hasta 4 columnas
-    rows = math.ceil(n / cols)
-    padding = 4
-    cell_w = max_w + padding * 2
-    cell_h = max_h + padding * 2
-
-    mosaic_w = int(cols * cell_w)
-    mosaic_h = int(rows * cell_h)
-
-    mosaic_canvas.width = mosaic_w
-    mosaic_canvas.height = mosaic_h
-
-    # Fondo
-    mosaic_ctx.fillStyle = "#020617"
-    mosaic_ctx.fillRect(0, 0, mosaic_w, mosaic_h)
-
-    w = src_canvas.width
-    h = src_canvas.height
-
-    for i, (minx, miny, maxx, maxy, area) in enumerate(patches_sorted):
-        pw = maxx - minx + 1
-        ph = maxy - miny + 1
-        col = i % cols
-        row = i // cols
-        cell_x = col * cell_w
-        cell_y = row * cell_h
-        dest_x = int(cell_x + (cell_w - pw) / 2)
-        dest_y = int(cell_y + (cell_h - ph) / 2)
-
-        mosaic_ctx.drawImage(
-            src_canvas,
-            minx, miny, pw, ph,
-            dest_x, dest_y, pw, ph
-        )
+    # Crear mosaico vertical (una sola imagen apilando todos los parches)
+    if patch_canvases:
+        max_w = max(c.width for c in patch_canvases)
+        total_h = sum(c.height for c in patch_canvases)
+        mosaic_canvas.width = max_w
+        mosaic_canvas.height = total_h
+        mctx = mosaic_canvas.getContext("2d")
+        y_off = 0
+        for c in patch_canvases:
+            mctx.drawImage(c, 0, y_off)
+            y_off += c.height
+        mosaic_canvas.style.display = "block"
+        btn_download.disabled = False
 
 def download_mosaic(ev):
-    if not last_patches or mosaic_canvas.width <= 1 or mosaic_canvas.height <= 1:
-        window.alert("No hay mosaico disponible. Procesa primero los morados.")
+    # Descarga el contenido del canvas mosaico como PNG
+    if mosaic_canvas.width == 0 or mosaic_canvas.height == 0:
+        window.alert("No hay mosaico generado todavía.")
         return
-
-    data_url = mosaic_canvas.toDataURL("image/png")
-    a = html.A("download", href=data_url)
+    url = mosaic_canvas.toDataURL("image/png")
+    a = html.A("download")
+    a.attrs["href"] = url
     a.attrs["download"] = "mosaico_morados.png"
     document <= a
     a.click()
