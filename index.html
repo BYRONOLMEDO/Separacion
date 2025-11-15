@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="utf-8" />
-<title>Separación de Parches Lila – Consumertec (HSV Exacto)</title>
+<title>Separación de Parches Lila – Consumertec (HSV Calibrado Real)</title>
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 
 <!-- Brython -->
@@ -13,26 +13,25 @@
 body{
   margin:0;
   font-family:system-ui;
-  background:#020617;
+  background:#0b1220;
   color:#e5e7eb;
 }
 .wrap{max-width:1200px;margin:0 auto;padding:16px}
 h1{font-size:1.4rem;margin-bottom:8px}
 .card{
-  background:#020617;
+  background:#0f172a;
   border-radius:14px;
   border:1px solid rgba(148,163,184,.4);
   padding:14px;
-  box-shadow:0 10px 30px rgba(0,0,0,.6);
   margin-top:12px;
 }
 .row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
 input[type=file]{display:none}
 .btn{
-  padding:9px 14px;
+  padding:8px 14px;
   border-radius:10px;
   border:1px solid rgba(148,163,184,.7);
-  background:#020617;
+  background:#0f172a;
   color:#e5e7eb;
   cursor:pointer;
   font-size:.95rem;
@@ -51,7 +50,6 @@ input[type=file]{display:none}
 .patch{border-radius:8px;border:1px solid rgba(148,163,184,.4);overflow:hidden;background:#0b1120}
 .patch canvas{display:block;max-width:150px;height:auto}
 .badge{padding:2px 8px;border-radius:999px;border:1px solid rgba(148,163,184,.7);font-size:.8rem;color:#a5b4fc;margin-left:4px}
-.slider-box{margin:6px 0;color:#cbd5e1;font-size:.85rem}
 </style>
 </head>
 
@@ -60,8 +58,9 @@ input[type=file]{display:none}
 <div class="wrap">
 
 <h1>Separación Automática de Parches Lila – Consumertec</h1>
-<p>Detector calibrado especialmente para los parches lila reales de laboratorio Consumertec.</p>
+<p>Detector calibrado con tu manta real. Extrae cada parche lila y genera un mosaico descargable.</p>
 
+<!-- PANEL -->
 <div class="card">
   <div class="row">
     <label class="btn primary">
@@ -76,8 +75,9 @@ input[type=file]{display:none}
   <img id="preview" alt="Vista previa" />
 </div>
 
+<!-- RESULTADOS -->
 <div class="card">
-  <h2 style="font-size:1.05rem;margin-top:0">Parches lila detectados</h2>
+  <h2 style="font-size:1.05rem;margin-top:0">Parches detectados</h2>
   <div id="patches"></div>
 </div>
 
@@ -85,90 +85,38 @@ input[type=file]{display:none}
 
 </div>
 
-<!-- ============================ BRYTHON ================================== -->
+
+<!-- ======================== BRYTHON PYTHON ======================== -->
 <script type="text/python">
 from browser import document, html, window
-import math
 
-file_input = document["fileInput"]
-btn_process = document["btnProcess"]
+# DOM
+file_input   = document["fileInput"]
+btn_process  = document["btnProcess"]
 btn_download = document["btnDownload"]
-patches_el = document["patches"]
-preview_el = document["preview"]
-status_el = document["status"]
-info_el = document["info"]
+preview_el   = document["preview"]
+status_el    = document["status"]
+patches_el   = document["patches"]
+info_el      = document["info"]
 
 src_canvas = document["srcCanvas"]
-src_ctx = src_canvas.getContext("2d")
+src_ctx    = src_canvas.getContext("2d")
 
 current_img = None
 image_ready = False
+patches_data = []   # aquí guardamos los parches para el botón Descargar
 
-def set_status(t):
-    status_el.text = f"Estado: {t}"
 
-# -------------------------------------------------------
-# Conversión HSV
-# -------------------------------------------------------
-def rgb_to_hsv(r,g,b):
-    r2,g2,b2 = r/255, g/255, b/255
-    mx = max(r2,g2,b2)
-    mn = min(r2,g2,b2)
-    diff = mx - mn
+def status(msg):
+    status_el.text = "Estado: " + msg
 
-    # Hue
-    if diff == 0:
-        h = 0
-    elif mx == r2:
-        h = (60*((g2 - b2)/diff) + 360) % 360
-    elif mx == g2:
-        h = (60*((b2 - r2)/diff) + 120) % 360
-    else:
-        h = (60*((r2 - g2)/diff) + 240) % 360
 
-    s = 0 if mx == 0 else diff/mx
-    v = mx
-    return h, s, v
-
-# -------------------------------------------------------
-# Detector EXACTO basado en medición REAL de tu imagen
-# -------------------------------------------------------
-def is_lila_exacto(r,g,b):
-    h,s,v = rgb_to_hsv(r,g,b)
-
-    # h en 0–360 → necesitamos normalizar a 0–1
-    h_norm = h/360
-
-    # Rango EXACTO medido:
-    if 0.11 <= h_norm <= 0.19 and 0.22 <= s <= 0.50 and 0.50 <= v <= 0.80:
-        return True
-
-    return False
-
-# -------------------------------------------------------
-# Detector ULTRA RELAJADO (si no se encuentra nada)
-# -------------------------------------------------------
-def is_lila_relajado(r,g,b):
-    h,s,v = rgb_to_hsv(r,g,b)
-    h_norm = h/360
-
-    if 0.08 <= h_norm <= 0.24 and s >= 0.15 and v >= 0.30:
-        return True
-
-    # Aceptar azulados con saturación media
-    if b >= r and b >= g and s > 0.10:
-        return True
-
-    return False
-
-# -------------------------------------------------------
-# Carga de imagen
-# -------------------------------------------------------
+# ------------------- Cargar imagen ----------------------
 def on_file(ev):
     global current_img, image_ready
     files = ev.target.files
     if not files:
-        set_status("No se seleccionó archivo.")
+        status("No se seleccionó archivo.")
         return
 
     f = files[0]
@@ -181,190 +129,258 @@ def on_file(ev):
             global current_img, image_ready
             current_img = img
             image_ready = True
-
             preview_el.src = img.src
-            w, h = img.naturalWidth, img.naturalHeight
-            src_canvas.width = w
+
+            w = img.naturalWidth
+            h = img.naturalHeight
+            src_canvas.width  = w
             src_canvas.height = h
             src_ctx.drawImage(img, 0, 0)
 
-            set_status(f"Imagen cargada ({w}×{h}).")
+            status(f"Imagen cargada ({w}×{h}).")
 
         img.bind("load", onimg)
         img.src = e.target.result
 
     reader.bind("load", onload)
     reader.readAsDataURL(f)
-    set_status("Cargando imagen…")
+    status("Cargando imagen…")
 
 file_input.bind("change", on_file)
 
-# -------------------------------------------------------
-# Procesar parches
-# -------------------------------------------------------
+
+# ------------------- Conversión RGB → HSV ----------------------
+def rgb_to_hsv(r, g, b):
+    r2, g2, b2 = r/255, g/255, b/255
+    mx = max(r2, g2, b2)
+    mn = min(r2, g2, b2)
+    diff = mx - mn
+
+    if diff == 0:
+        h = 0
+    elif mx == r2:
+        h = (60 * ((g2 - b2) / diff) + 360) % 360
+    elif mx == g2:
+        h = (60 * ((b2 - r2) / diff) + 120) % 360
+    else:
+        h = (60 * ((r2 - g2) / diff) + 240) % 360
+
+    s = 0 if mx == 0 else diff / mx
+    v = mx
+    return h/360, s, v   # normalizamos H a [0,1]
+
+
+# ------------------- Detector LILA / MORADO CALIBRADO ----------------------
+# Rangos medidos directamente sobre tu manta DSC00442.JPG
+
+# Rango "estricto": solo el lila de los parches
+def is_lila(r, g, b):
+    h, s, v = rgb_to_hsv(r, g, b)
+    # H: ~0.908 ± 0.03  (aprox 316°–337°)
+    # S: 0.18–0.38
+    # V: 0.42–0.70
+    if (0.878 <= h <= 0.938) and (0.18 <= s <= 0.38) and (0.42 <= v <= 0.70):
+        return True
+    return False
+
+
+# Rango "relajado": permite cambios de iluminación, pero sigue siendo lila
+def is_lila_relaxed(r, g, b):
+    h, s, v = rgb_to_hsv(r, g, b)
+    # Hue algo más amplio + S,V algo más amplios
+    if (0.84 <= h <= 0.98) and (0.13 <= s <= 0.45) and (0.32 <= v <= 0.74):
+        return True
+
+    # Heurística extra por si el balance de blancos cambia:
+    # más azul que verde y rojo moderado
+    if (b > g + 10) and (b >= r - 5):
+        return True
+
+    return False
+
+
+# ------------------- Procesar ----------------------
 def process(ev):
-    global image_ready
+    global patches_data
 
     if not image_ready:
         window.alert("Primero sube una imagen.")
         return
 
     patches_el.clear()
-    w, h = src_canvas.width, src_canvas.height
-    data = src_ctx.getImageData(0,0,w,h).data
+    patches_data = []
 
-    mask = [0]*(w*h)
-    count = 0
+    w = src_canvas.width
+    h = src_canvas.height
+    data = src_ctx.getImageData(0, 0, w, h).data
 
-    # Primera pasada EXACTA
+    mask = [0] * (w * h)
+    count_strict = 0
+    count_relaxed = 0
+
+    # Primera pasada: rango estricto
     for y in range(h):
         for x in range(w):
-            idx = y*w+x
-            p = idx*4
-            r,g,b = data[p], data[p+1], data[p+2]
-            if is_lila_exacto(r,g,b):
+            idx = y * w + x
+            p   = idx * 4
+            r = data[p]
+            g = data[p+1]
+            b = data[p+2]
+            if is_lila(r, g, b):
                 mask[idx] = 1
-                count += 1
+                count_strict += 1
 
-    # Ultra relajado si no detectó nada
-    if count == 0:
-        set_status("Rango exacto no encontró nada. Activando modo relajado…")
+    # Si no encuentra nada, pasamos a rango extendido
+    if count_strict == 0:
+        status("Sin éxito en rango estricto. Activando modo relajado…")
         for y in range(h):
             for x in range(w):
-                idx = y*w+x
-                p = idx*4
-                r,g,b = data[p], data[p+1], data[p+2]
-                if is_lila_relajado(r,g,b):
+                idx = y * w + x
+                p   = idx * 4
+                r = data[p]
+                g = data[p+1]
+                b = data[p+2]
+                if is_lila_relaxed(r, g, b):
                     mask[idx] = 1
-                    count += 1
+                    count_relaxed += 1
 
-        if count == 0:
+        if count_relaxed == 0:
             info_el.text = "0 parches"
-            set_status("No se detectaron parches lila.")
+            status("No se detectaron parches morados (ni con rango relajado).")
             return
+        else:
+            status(f"Píxeles lila detectados (relajado): {count_relaxed}")
+    else:
+        status(f"Píxeles lila detectados (estricto): {count_strict}")
 
-    set_status(f"Píxeles lila detectados: {count}")
-
-    # BFS componentes
-    visited = [0]*(w*h)
-    dirs = [(1,0),(-1,0),(0,1),(0,-1)]
+    # BFS para agrupar píxeles en parches
+    visited = [0] * (w * h)
+    dirs = [(1,0), (-1,0), (0,1), (0,-1)]
     patches = []
 
     for y in range(h):
         for x in range(w):
-            idx0 = y*w+x
-            if mask[idx0]==0 or visited[idx0]==1:
+            idx0 = y * w + x
+            if mask[idx0] == 0 or visited[idx0] == 1:
                 continue
 
-            q=[(x,y)]
-            visited[idx0]=1
-            minx=maxx=x
-            miny=maxy=y
-            area=0
+            q = [(x, y)]
+            visited[idx0] = 1
+            minx = maxx = x
+            miny = maxy = y
+            area = 0
 
             while q:
-                cx,cy = q.pop()
-                area+=1
-                if cx<minx: minx=cx
-                if cx>maxx: maxx=cx
-                if cy<miny: miny=cy
-                if cy>maxy: maxy=cy
+                cx, cy = q.pop()
+                area += 1
+                if cx < minx: minx = cx
+                if cx > maxx: maxx = cx
+                if cy < miny: miny = cy
+                if cy > maxy: maxy = cy
 
-                for dx,dy in dirs:
-                    nx,ny = cx+dx, cy+dy
-                    if 0<=nx<w and 0<=ny<h:
-                        idxn = ny*w+nx
-                        if mask[idxn]==1 and visited[idxn]==0:
-                            visited[idxn]=1
-                            q.append((nx,ny))
+                for dx, dy in dirs:
+                    nx, ny = cx + dx, cy + dy
+                    if 0 <= nx < w and 0 <= ny < h:
+                        idxn = ny * w + nx
+                        if mask[idxn] == 1 and visited[idxn] == 0:
+                            visited[idxn] = 1
+                            q.append((nx, ny))
 
-            if area >= 200:  # tamaño mínimo real para tus parches
-                patches.append((minx,miny,maxx,maxy,area))
+            # Área mínima para descartar ruido
+            if area > 200:
+                patches.append((minx, miny, maxx, maxy, area))
 
     if not patches:
-        info_el.text="0 parches"
-        set_status("No se detectaron parches lila suficientemente grandes.")
+        info_el.text = "0 parches"
+        status("No hubo parches lila suficientemente grandes.")
         return
 
-    patches.sort(key=lambda p:(p[1],p[0]))
+    # Ordenar parches de arriba a abajo, izquierda a derecha
+    patches.sort(key=lambda p: (p[1], p[0]))
 
-    # Mostrar
-    for i,(minx,miny,maxx,maxy,area) in enumerate(patches,start=1):
-        pw=maxx-minx+1
-        ph=maxy-miny+1
+    # Dibujar miniaturas
+    for i, (minx, miny, maxx, maxy, area) in enumerate(patches, start=1):
+        pw = maxx - minx + 1
+        ph = maxy - miny + 1
+
         c = html.CANVAS()
-        c.width=pw; c.height=ph
+        c.width  = pw
+        c.height = ph
         ctx = c.getContext("2d")
-        ctx.drawImage(src_canvas,minx,miny,pw,ph,0,0,pw,ph)
+        ctx.drawImage(src_canvas, minx, miny, pw, ph, 0, 0, pw, ph)
 
         box = html.DIV(Class="patch")
         box <= c
         box <= html.DIV(
             f"#{i} — {pw}×{ph}, área≈{area}",
-            style={"font-size":"0.75rem","color":"#9ca3af","padding":"2px 6px"}
+            style={"font-size": "0.75rem", "color": "#9ca3af", "padding": "2px 6px"}
         )
         patches_el <= box
 
+    patches_data = patches
     info_el.text = f"{len(patches)} parches"
-    set_status(f"Detectados {len(patches)} parches.")
-    document["patches_list"] = patches
+    status(f"Detectados {len(patches)} parches lila.")
 
 
 btn_process.bind("click", process)
 
-# -------------------------------------------------------
-# Descargar mosaico
-# -------------------------------------------------------
+
+# ------------------- Descargar mosaico ----------------------
 def download(ev):
-    patches = document.get("patches_list", None)
-    if not patches:
-        window.alert("Procesa primero los parches.")
+    global patches_data
+    if not patches_data:
+        window.alert("Primero pulsa 'Procesar parches lila'.")
         return
 
-    rows=[]
-    row=[]
-    max_h=0
+    # Organizamos en filas de 4 parches
+    rows = []
+    row  = []
+    max_h = 0
 
-    for i,p in enumerate(patches):
-        minx,miny,maxx,maxy,area = p
-        pw=maxx-minx+1
-        ph=maxy-miny+1
-        row.append((minx,miny,pw,ph))
-        if ph>max_h: max_h=ph
-        if (i+1)%4==0:
-            rows.append((row,max_h))
-            row=[]
-            max_h=0
+    for i, p in enumerate(patches_data):
+        minx, miny, maxx, maxy, area = p
+        pw = maxx - minx + 1
+        ph = maxy - miny + 1
+        row.append((minx, miny, pw, ph))
+        if ph > max_h:
+            max_h = ph
+
+        if (i + 1) % 4 == 0:
+            rows.append((row, max_h))
+            row = []
+            max_h = 0
+
     if row:
-        rows.append((row,max_h))
+        rows.append((row, max_h))
 
     total_w = 0
     total_h = 0
-    for r,hh in rows:
-        rw=sum([pw for _,_,pw,_ in r])
-        if rw>total_w: total_w=rw
+    for r, hh in rows:
+        rw = sum([pw for _, _, pw, _ in r])
         total_h += hh
+        if rw > total_w:
+            total_w = rw
 
     out = html.CANVAS()
-    out.width = total_w
-    out.height= total_h
+    out.width  = total_w
+    out.height = total_h
     octx = out.getContext("2d")
 
-    yoff=0
-    for r,hh in rows:
-        xoff=0
-        for minx,miny,pw,ph in r:
-            octx.drawImage(src_canvas,minx,miny,pw,ph,xoff,yoff,pw,ph)
-            xoff+=pw
-        yoff+=hh
+    yoff = 0
+    for r, hh in rows:
+        xoff = 0
+        for minx, miny, pw, ph in r:
+            octx.drawImage(src_canvas, minx, miny, pw, ph, xoff, yoff, pw, ph)
+            xoff += pw
+        yoff += hh
 
     a = html.A()
-    a.download = "mosaico_lilas.png"
-    a.href = out.toDataURL("image/png")
+    a.download = "mosaico_lila.png"
+    a.href     = out.toDataURL("image/png")
     a.click()
 
 btn_download.bind("click", download)
-
 </script>
+
 </body>
 </html>
