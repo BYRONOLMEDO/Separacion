@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="utf-8" />
-<title>Separación de Parches Morados — HSV (Brython)</title>
+<title>Separación de Parches Lila – Consumertec (HSV Exacto)</title>
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 
 <!-- Brython -->
@@ -59,17 +59,16 @@ input[type=file]{display:none}
 
 <div class="wrap">
 
-<h1>Separación Automática de Parches Morados — HSV</h1>
-<p>Detector avanzado de morados basado en HSV, con auto-relajación y extracción de parches.</p>
+<h1>Separación Automática de Parches Lila – Consumertec</h1>
+<p>Detector calibrado especialmente para los parches lila reales de laboratorio Consumertec.</p>
 
-<!-- PANEL PRINCIPAL -->
 <div class="card">
   <div class="row">
     <label class="btn primary">
       <input id="fileInput" type="file" accept="image/*">
       Subir imagen
     </label>
-    <button id="btnProcess" class="btn">Procesar morados</button>
+    <button id="btnProcess" class="btn">Procesar parches lila</button>
     <button id="btnDownload" class="btn ok">Descargar mosaico</button>
     <span id="info" class="badge">0 parches</span>
   </div>
@@ -77,71 +76,30 @@ input[type=file]{display:none}
   <img id="preview" alt="Vista previa" />
 </div>
 
-<!-- AJUSTE DE UMBRALES -->
 <div class="card">
-  <h3>Ajuste fino (opcional)</h3>
-
-  <div class="slider-box">
-    Saturación mínima:
-    <input id="sMin" type="range" min="0" max="100" value="25"> <span id="sMinVal">25%</span>
-  </div>
-
-  <div class="slider-box">
-    Valor mínimo:
-    <input id="vMin" type="range" min="0" max="100" value="25"> <span id="vMinVal">25%</span>
-  </div>
-
-  <div class="slider-box">
-    Área mínima del parche:
-    <input id="minArea" type="range" min="20" max="2000" value="80"> <span id="minAreaVal">80</span>
-  </div>
-</div>
-
-<!-- RESULTADOS -->
-<div class="card">
-  <h2 style="font-size:1.05rem;margin-top:0">Parches morados detectados</h2>
+  <h2 style="font-size:1.05rem;margin-top:0">Parches lila detectados</h2>
   <div id="patches"></div>
 </div>
 
-<!-- hidden canvas -->
 <canvas id="srcCanvas"></canvas>
 
 </div>
 
-<!-- ================================= BRYTHON ================================= -->
+<!-- ============================ BRYTHON ================================== -->
 <script type="text/python">
 from browser import document, html, window
 import math
 
-# ======================= REFERENCIAS ===========================
 file_input = document["fileInput"]
 btn_process = document["btnProcess"]
 btn_download = document["btnDownload"]
+patches_el = document["patches"]
 preview_el = document["preview"]
 status_el = document["status"]
-patches_el = document["patches"]
 info_el = document["info"]
 
 src_canvas = document["srcCanvas"]
 src_ctx = src_canvas.getContext("2d")
-
-# sliders
-sMin = document["sMin"]
-vMin = document["vMin"]
-minArea = document["minArea"]
-
-document["sMinVal"].text = sMin.value + "%"
-document["vMinVal"].text = vMin.value + "%"
-document["minAreaVal"].text = minArea.value
-
-for s, label, suf in [
-    (sMin,"sMinVal","%"),
-    (vMin,"vMinVal","%"),
-    (minArea,"minAreaVal","")
-]:
-    def bind_slider(ev, s=s, label=label, suf=suf):
-        document[label].text = s.value + suf
-    s.bind("input", bind_slider)
 
 current_img = None
 image_ready = False
@@ -149,43 +107,13 @@ image_ready = False
 def set_status(t):
     status_el.text = f"Estado: {t}"
 
-# ======================= CARGA DE IMAGEN =======================
-def on_file(ev):
-    global current_img, image_ready
-    files = ev.target.files
-    if not files:
-        set_status("No se seleccionó archivo.")
-        return
-    f = files[0]
-    reader = window.FileReader.new()
-
-    def onload(e):
-        img = html.IMG()
-        def onimg(_):
-            global current_img, image_ready
-            current_img = img
-            image_ready = True
-
-            preview_el.src = img.src
-            w, h = img.naturalWidth, img.naturalHeight
-            src_canvas.width, src_canvas.height = w, h
-            src_ctx.drawImage(img, 0, 0)
-            set_status(f"Imagen cargada ({w}×{h}).")
-        img.bind("load", onimg)
-        img.src = e.target.result
-
-    reader.bind("load", onload)
-    reader.readAsDataURL(f)
-    set_status("Cargando imagen…")
-
-file_input.bind("change", on_file)
-
-
-# ======================= CONVERSIÓN HSV ========================
+# -------------------------------------------------------
+# Conversión HSV
+# -------------------------------------------------------
 def rgb_to_hsv(r,g,b):
-    r2, g2, b2 = r/255, g/255, b/255
-    mx = max(r2, g2, b2)
-    mn = min(r2, g2, b2)
+    r2,g2,b2 = r/255, g/255, b/255
+    mx = max(r2,g2,b2)
+    mn = min(r2,g2,b2)
     diff = mx - mn
 
     # Hue
@@ -198,30 +126,82 @@ def rgb_to_hsv(r,g,b):
     else:
         h = (60*((r2 - g2)/diff) + 240) % 360
 
-    # Saturation
     s = 0 if mx == 0 else diff/mx
-
-    # Value
     v = mx
-
     return h, s, v
 
-
-# ======================= DETECTOR DE MORADO HSV =======================
-def is_purple(r,g,b):
+# -------------------------------------------------------
+# Detector EXACTO basado en medición REAL de tu imagen
+# -------------------------------------------------------
+def is_lila_exacto(r,g,b):
     h,s,v = rgb_to_hsv(r,g,b)
 
-    # rango fino de morados
-    if not (250 <= h <= 310):
-        return False
+    # h en 0–360 → necesitamos normalizar a 0–1
+    h_norm = h/360
 
-    if s < (int(sMin.value)/100): return False
-    if v < (int(vMin.value)/100): return False
+    # Rango EXACTO medido:
+    if 0.11 <= h_norm <= 0.19 and 0.22 <= s <= 0.50 and 0.50 <= v <= 0.80:
+        return True
 
-    return True
+    return False
 
+# -------------------------------------------------------
+# Detector ULTRA RELAJADO (si no se encuentra nada)
+# -------------------------------------------------------
+def is_lila_relajado(r,g,b):
+    h,s,v = rgb_to_hsv(r,g,b)
+    h_norm = h/360
 
-# ======================= PROCESAR MORADOS =======================
+    if 0.08 <= h_norm <= 0.24 and s >= 0.15 and v >= 0.30:
+        return True
+
+    # Aceptar azulados con saturación media
+    if b >= r and b >= g and s > 0.10:
+        return True
+
+    return False
+
+# -------------------------------------------------------
+# Carga de imagen
+# -------------------------------------------------------
+def on_file(ev):
+    global current_img, image_ready
+    files = ev.target.files
+    if not files:
+        set_status("No se seleccionó archivo.")
+        return
+
+    f = files[0]
+    reader = window.FileReader.new()
+
+    def onload(e):
+        img = html.IMG()
+
+        def onimg(_):
+            global current_img, image_ready
+            current_img = img
+            image_ready = True
+
+            preview_el.src = img.src
+            w, h = img.naturalWidth, img.naturalHeight
+            src_canvas.width = w
+            src_canvas.height = h
+            src_ctx.drawImage(img, 0, 0)
+
+            set_status(f"Imagen cargada ({w}×{h}).")
+
+        img.bind("load", onimg)
+        img.src = e.target.result
+
+    reader.bind("load", onload)
+    reader.readAsDataURL(f)
+    set_status("Cargando imagen…")
+
+file_input.bind("change", on_file)
+
+# -------------------------------------------------------
+# Procesar parches
+# -------------------------------------------------------
 def process(ev):
     global image_ready
 
@@ -230,58 +210,51 @@ def process(ev):
         return
 
     patches_el.clear()
-
     w, h = src_canvas.width, src_canvas.height
     data = src_ctx.getImageData(0,0,w,h).data
 
     mask = [0]*(w*h)
     count = 0
 
-    # Primera pasada
+    # Primera pasada EXACTA
     for y in range(h):
         for x in range(w):
-            idx = y*w + x
+            idx = y*w+x
             p = idx*4
-            r = data[p]; g = data[p+1]; b = data[p+2]
-            if is_purple(r,g,b):
-                mask[idx]=1
-                count+=1
+            r,g,b = data[p], data[p+1], data[p+2]
+            if is_lila_exacto(r,g,b):
+                mask[idx] = 1
+                count += 1
 
-    # Si no hay morados, hacer detección relajada
+    # Ultra relajado si no detectó nada
     if count == 0:
-        set_status("No detecta en rango primario. Activando detección relajada...")
-        def is_purple_relaxed(r,g,b):
-            h,s,v = rgb_to_hsv(r,g,b)
-            if not (230 <= h <= 330): return False
-            if s < 0.15: return False
-            if v < 0.20: return False
-            return True
-
+        set_status("Rango exacto no encontró nada. Activando modo relajado…")
         for y in range(h):
             for x in range(w):
-                idx = y*w + x
+                idx = y*w+x
                 p = idx*4
-                r = data[p]; g=data[p+1]; b=data[p+2]
-                if is_purple_relaxed(r,g,b):
-                    mask[idx]=1
+                r,g,b = data[p], data[p+1], data[p+2]
+                if is_lila_relajado(r,g,b):
+                    mask[idx] = 1
                     count += 1
 
         if count == 0:
             info_el.text = "0 parches"
-            set_status("No se detectaron parches morados (ni con rango relajado).")
+            set_status("No se detectaron parches lila.")
             return
 
-    set_status(f"Píxeles morados detectados: {count}")
+    set_status(f"Píxeles lila detectados: {count}")
 
-    # BFS para componentes
-    visited=[0]*(w*h)
-    dirs=[(1,0),(-1,0),(0,1),(0,-1)]
-    patches=[]
+    # BFS componentes
+    visited = [0]*(w*h)
+    dirs = [(1,0),(-1,0),(0,1),(0,-1)]
+    patches = []
 
     for y in range(h):
         for x in range(w):
             idx0 = y*w+x
-            if mask[idx0]==0 or visited[idx0]==1: continue
+            if mask[idx0]==0 or visited[idx0]==1:
+                continue
 
             q=[(x,y)]
             visited[idx0]=1
@@ -305,12 +278,12 @@ def process(ev):
                             visited[idxn]=1
                             q.append((nx,ny))
 
-            if area >= int(minArea.value):
+            if area >= 200:  # tamaño mínimo real para tus parches
                 patches.append((minx,miny,maxx,maxy,area))
 
     if not patches:
         info_el.text="0 parches"
-        set_status("No se detectaron parches morados suficientemente grandes.")
+        set_status("No se detectaron parches lila suficientemente grandes.")
         return
 
     patches.sort(key=lambda p:(p[1],p[0]))
@@ -321,31 +294,33 @@ def process(ev):
         ph=maxy-miny+1
         c = html.CANVAS()
         c.width=pw; c.height=ph
-        ctx=c.getContext("2d")
+        ctx = c.getContext("2d")
         ctx.drawImage(src_canvas,minx,miny,pw,ph,0,0,pw,ph)
 
-        box=html.DIV(Class="patch")
-        box<=c
-        box<=html.DIV(f"#{i} — {pw}×{ph}, área≈{area}",
-                      style={"font-size":"0.75rem","color":"#9ca3af","padding":"2px 6px"})
-        patches_el<=box
+        box = html.DIV(Class="patch")
+        box <= c
+        box <= html.DIV(
+            f"#{i} — {pw}×{ph}, área≈{area}",
+            style={"font-size":"0.75rem","color":"#9ca3af","padding":"2px 6px"}
+        )
+        patches_el <= box
 
-    info_el.text=f"{len(patches)} parches"
+    info_el.text = f"{len(patches)} parches"
     set_status(f"Detectados {len(patches)} parches.")
-    document['patches_list'] = patches
+    document["patches_list"] = patches
 
 
 btn_process.bind("click", process)
 
-
-# ======================= DESCARGAR MOSAICO =======================
+# -------------------------------------------------------
+# Descargar mosaico
+# -------------------------------------------------------
 def download(ev):
-    patches = document.get('patches_list', None)
+    patches = document.get("patches_list", None)
     if not patches:
         window.alert("Procesa primero los parches.")
         return
 
-    wsum = 0
     rows=[]
     row=[]
     max_h=0
@@ -365,7 +340,7 @@ def download(ev):
 
     total_w = 0
     total_h = 0
-    for (r,hh) in rows:
+    for r,hh in rows:
         rw=sum([pw for _,_,pw,_ in r])
         if rw>total_w: total_w=rw
         total_h += hh
@@ -376,15 +351,15 @@ def download(ev):
     octx = out.getContext("2d")
 
     yoff=0
-    for (r,hh) in rows:
+    for r,hh in rows:
         xoff=0
-        for (minx,miny,pw,ph) in r:
+        for minx,miny,pw,ph in r:
             octx.drawImage(src_canvas,minx,miny,pw,ph,xoff,yoff,pw,ph)
-            xoff += pw
-        yoff += hh
+            xoff+=pw
+        yoff+=hh
 
     a = html.A()
-    a.download = "mosaico_morados.png"
+    a.download = "mosaico_lilas.png"
     a.href = out.toDataURL("image/png")
     a.click()
 
