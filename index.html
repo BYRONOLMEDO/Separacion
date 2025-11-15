@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Separación de parches morados — Brython</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <!-- Brython desde CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/brython@3.12.2/brython.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/brython@3.12.2/brython_stdlib.js"></script>
+  <style>
+    body{
+      margin:0;
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;
+      background:#020617;
+      color:#e5e7eb;
+    }
+    .wrap{
+      max-width:1200px;
+      margin:0 auto;
+      padding:16px;
+    }
+    h1{font-size:1.4rem;margin-bottom:8px}
+    p{color:#9ca3af;font-size:.95rem}
+    .card{
+      background:#020617;
+      border-radius:14px;
+      border:1px solid rgba(148,163,184,.4);
+      padding:14px;
+      box-shadow:0 10px 30px rgba(0,0,0,.6);
+      margin-top:12px;
+    }
+    .row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+    input[type=file]{display:none}
+    .btn{
+      padding:9px 14px;
+      border-radius:10px;
+      border:1px solid rgba(148,163,184,.7);
+      background:#020617;
+      color:#e5e7eb;
+      cursor:pointer;
+      font-size:.95rem;
+    }
+    .btn.primary{border-color:#38bdf8}
+    .btn[disabled]{
+      opacity:.5;
+      cursor:not-allowed;
+    }
+    .status{color:#a5b4fc;font-size:.9rem;margin-top:6px}
+    #srcCanvas{display:none}
+    #preview{
+      max-width:100%;
+      border-radius:10px;
+      margin-top:10px;
+      border:1px solid rgba(148,163,184,.3);
+    }
+    #patches{
+      display:flex;
+      flex-wrap:wrap;
+      gap:8px;
+      margin-top:10px;
+    }
+    .patch{
+      border-radius:8px;
+      border:1px solid rgba(148,163,184,.4);
+      overflow:hidden;
+      background:#0b1120;
+    }
+    .patch canvas{
+      display:block;
+      max-width:150px;
+      height:auto;
+    }
+    .badge{
+      display:inline-block;
+      padding:2px 8px;
+      border-radius:999px;
+      border:1px solid rgba(148,163,184,.7);
+      font-size:.8rem;
+      color:#a5b4fc;
+      margin-left:4px;
+    }
+    #mosaicCanvas{
+      margin-top:10px;
+      max-width:100%;
+      border-radius:10px;
+      border:1px solid rgba(148,163,184,.3);
+      background:#020617;
+      display:block;
+    }
+  </style>
+</head>
+<body onload="brython()">
+  <div class="wrap">
+    <h1>Separación de parches morados — Brython</h1>
+    <p>
+      Sube una imagen con parches lila/morados. El programa detecta regiones de color
+      morado, las agrupa y genera un mosaico con cada parche separado. Luego puedes
+      descargar el mosaico como una sola imagen PNG.
+    </p>
+
+    <div class="card">
+      <div class="row">
+        <label class="btn primary">
+          <input id="fileInput" type="file" accept="image/*">
+          Subir imagen
+        </label>
+        <button id="btnProcess" class="btn">Procesar morados</button>
+        <button id="btnDownloadMosaic" class="btn" disabled>Descargar mosaico PNG</button>
+        <span id="info" class="badge">0 parches</span>
+      </div>
+      <div id="status" class="status">Estado: esperando imagen…</div>
+      <img id="preview" alt="Vista previa" />
+    </div>
+
+    <div class="card">
+      <h2 style="font-size:1.05rem;margin-top:0;margin-bottom:4px">Parches morados detectados</h2>
+      <div id="patches"></div>
+      <h3 style="font-size:0.95rem;margin-top:14px;margin-bottom:4px">Mosaico combinado</h3>
+      <canvas id="mosaicCanvas"></canvas>
+    </div>
+
+    <!-- Canvas oculto para procesar -->
+    <canvas id="srcCanvas"></canvas>
+  </div>
+
+  <!-- Código Python (Brython) -->
+  <script type="text/python">
+from browser import document, html, window
+import math
+
+file_input = document["fileInput"]
+btn_process = document["btnProcess"]
+btn_download = document["btnDownloadMosaic"]
+status_el = document["status"]
+preview_el = document["preview"]
+patches_el = document["patches"]
+info_el = document["info"]
+src_canvas = document["srcCanvas"]
+src_ctx = src_canvas.getContext("2d")
+mosaic_canvas = document["mosaicCanvas"]
+mosaic_ctx = mosaic_canvas.getContext("2d")
+
+current_img = None
+image_ready = False
+last_patches = []  # lista de (minx, miny, maxx, maxy, area)
+
+def set_status(text):
+    status_el.text = f"Estado: {text}"
+
+def on_file_change(ev):
+    global current_img, image_ready, last_patches
+    last_patches = []
+    btn_download.attrs["disabled"] = "disabled"
+    patches_el.clear()
+    info_el.text = "0 parches"
+    mosaic_canvas.width = 1
+    mosaic_canvas.height = 1
+
+    files = ev.target.files
+    if not files:
+        set_status("No se seleccionó archivo.")
+        return
+    f = files[0]
+    reader = window.FileReader.new()
+
+    def onload(e):
+        nonlocal f
+        img = html.IMG()
+
+        def on_img_load(ev2):
+            global current_img, image_ready
+            current_img = img
+            image_ready = True
+            preview_el.src = img.src
+            w = img.naturalWidth
+            h = img.naturalHeight
+            src_canvas.width = w
+            src_canvas.height = h
+            src_ctx.drawImage(img, 0, 0)
+            set_status(f"Imagen cargada ({w}×{h}). Listo para procesar morados.")
+        img.bind("load", on_img_load)
+        img.src = e.target.result
+
+    reader.bind("load", onload)
+    reader.readAsDataURL(f)
+    set_status("Cargando imagen…")
+
+file_input.bind("change", on_file_change)
+
+def rgb_to_hsv(r, g, b):
+    """Convierte RGB [0-255] a HSV (h en grados, s y v [0-1])."""
+    r_ = r / 255.0
+    g_ = g / 255.0
+    b_ = b / 255.0
+    cmax = max(r_, g_, b_)
+    cmin = min(r_, g_, b_)
+    diff = cmax - cmin
+
+    if diff == 0:
+        h = 0.0
+    elif cmax == r_:
+        h = (60 * ((g_ - b_) / diff) + 360) % 360
+    elif cmax == g_:
+        h = (60 * ((b_ - r_) / diff) + 120) % 360
+    else:
+        h = (60 * ((r_ - g_) / diff) + 240) % 360
+
+    s = 0.0 if cmax == 0 else diff / cmax
+    v = cmax
+    return h, s, v
+
+def is_purple(r, g, b):
+    """
+    Criterio mejorado de morado/lila usando HSV + reglas de relación.
+    Ajustado pensando en parches lila con mancha dentro.
+    """
+    h, s, v = rgb_to_hsv(r, g, b)
+
+    # 1) Rango de tono típico de morado-lila
+    if not (250 <= h <= 330):
+        return False
+
+    # 2) Saturación moderada y valor no muy bajo
+    if s < 0.18 or v < 0.25:
+        return False
+
+    # 3) Refuerzo en RGB: R y B relativamente altos y G algo más bajo
+    if r + b < 180:  # evita azules/violetas demasiado oscuros globalmente
+        return False
+    if g >= r or g >= b:
+        return False
+
+    # 4) Evitar rojos puros
+    if r > 220 and b < 100:
+        return False
+
+    return True
+
+def process_purple(ev):
+    global image_ready, last_patches
+    if not image_ready:
+        window.alert("Primero sube una imagen.")
+        return
+
+    w = src_canvas.width
+    h = src_canvas.height
+    if w == 0 or h == 0:
+        set_status("Canvas vacío.")
+        return
+
+    set_status("Procesando morados… (puede tardar unos segundos)")
+    patches_el.clear()
+    btn_download.attrs["disabled"] = "disabled"
+    mosaic_canvas.width = 1
+    mosaic_canvas.height = 1
+
+    img_data = src_ctx.getImageData(0, 0, w, h)
+    data = img_data.data
+
+    mask = [0] * (w * h)
+    for y in range(h):
+        base = y * w
+        for x in range(w):
+            idx = base + x
+            p = idx * 4
+            r = data[p]
+            g = data[p + 1]
+            b = data[p + 2]
+            if is_purple(r, g, b):
+                mask[idx] = 1
+
+    visited = [0] * (w * h)
+    patches = []
+    dirs = [(1,0),(-1,0),(0,1),(0,-1)]
+
+    for y in range(h):
+        for x in range(w):
+            idx0 = y*w + x
+            if mask[idx0] == 0 or visited[idx0] == 1:
+                continue
+
+            queue = [(x, y)]
+            visited[idx0] = 1
+            minx = x; maxx = x
+            miny = y; maxy = y
+            area = 0
+
+            while queue:
+                cx, cy = queue.pop()
+                area += 1
+                if cx < minx: minx = cx
+                if cx > maxx: maxx = cx
+                if cy < miny: miny = cy
+                if cy > maxy: maxy = cy
+
+                for dx, dy in dirs:
+                    nx = cx + dx
+                    ny = cy + dy
+                    if 0 <= nx < w and 0 <= ny < h:
+                        idxn = ny*w + nx
+                        if mask[idxn] == 1 and visited[idxn] == 0:
+                            visited[idxn] = 1
+                            queue.append((nx, ny))
+
+            # Filtrar componentes pequeños (ajustable)
+            if area < 80:
+                continue
+            patches.append((minx, miny, maxx, maxy, area))
+
+    if not patches:
+        set_status("No se detectaron parches morados con el criterio actual.")
+        info_el.text = "0 parches"
+        last_patches = []
+        return
+
+    patches_sorted = sorted(patches, key=lambda p: (p[1], p[0]))
+    last_patches = patches_sorted
+
+    # Mostrar parches individuales
+    for i, (minx, miny, maxx, maxy, area) in enumerate(patches_sorted, start=1):
+        pw = maxx - minx + 1
+        ph = maxy - miny + 1
+        c = html.CANVAS()
+        c.width = pw
+        c.height = ph
+        ctx = c.getContext("2d")
+        ctx.drawImage(src_canvas, minx, miny, pw, ph, 0, 0, pw, ph)
+        cont = html.DIV(Class="patch")
+        cont <= c
+        label = html.DIV(
+            f"#{i} — {pw}×{ph}, área≈{area}",
+            style={
+                "font-size": "0.75rem",
+                "color": "#9ca3af",
+                "padding": "2px 6px"
+            }
+        )
+        cont <= label
+        patches_el <= cont
+
+    info_el.text = f"{len(patches_sorted)} parches"
+    set_status(f"Listo. Detectados {len(patches_sorted)} parches morados.")
+    build_mosaic(patches_sorted)
+    # Habilitar botón de descarga
+    if "disabled" in btn_download.attrs:
+        del btn_download.attrs["disabled"]
+
+def build_mosaic(patches_sorted):
+    """
+    Construye un mosaico con todos los parches morados en un solo canvas.
+    Los organiza en una cuadrícula de hasta 4 columnas.
+    """
+    if not patches_sorted:
+        mosaic_canvas.width = 1
+        mosaic_canvas.height = 1
+        return
+
+    # Determinar tamaños máximos
+    widths = []
+    heights = []
+    for (minx, miny, maxx, maxy, area) in patches_sorted:
+        widths.append(maxx - minx + 1)
+        heights.append(maxy - miny + 1)
+    max_w = max(widths)
+    max_h = max(heights)
+
+    # Definir cuadrícula
+    n = len(patches_sorted)
+    cols = min(4, n)  # hasta 4 columnas
+    rows = math.ceil(n / cols)
+    padding = 4
+    cell_w = max_w + padding * 2
+    cell_h = max_h + padding * 2
+
+    mosaic_w = int(cols * cell_w)
+    mosaic_h = int(rows * cell_h)
+
+    mosaic_canvas.width = mosaic_w
+    mosaic_canvas.height = mosaic_h
+
+    # Fondo
+    mosaic_ctx.fillStyle = "#020617"
+    mosaic_ctx.fillRect(0, 0, mosaic_w, mosaic_h)
+
+    w = src_canvas.width
+    h = src_canvas.height
+
+    for i, (minx, miny, maxx, maxy, area) in enumerate(patches_sorted):
+        pw = maxx - minx + 1
+        ph = maxy - miny + 1
+        col = i % cols
+        row = i // cols
+        cell_x = col * cell_w
+        cell_y = row * cell_h
+        dest_x = int(cell_x + (cell_w - pw) / 2)
+        dest_y = int(cell_y + (cell_h - ph) / 2)
+
+        mosaic_ctx.drawImage(
+            src_canvas,
+            minx, miny, pw, ph,
+            dest_x, dest_y, pw, ph
+        )
+
+def download_mosaic(ev):
+    if not last_patches or mosaic_canvas.width <= 1 or mosaic_canvas.height <= 1:
+        window.alert("No hay mosaico disponible. Procesa primero los morados.")
+        return
+
+    data_url = mosaic_canvas.toDataURL("image/png")
+    a = html.A("download", href=data_url)
+    a.attrs["download"] = "mosaico_morados.png"
+    document <= a
+    a.click()
+    a.remove()
+
+btn_process.bind("click", process_purple)
+btn_download.bind("click", download_mosaic)
+  </script>
+</body>
+</html>
