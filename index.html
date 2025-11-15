@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="utf-8" />
-<title>Separación de Parches Lila – Consumertec (HSV Calibrado Real)</title>
+<title>Extracción de 16 cuadrados lila – Brython</title>
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 
 <!-- Brython -->
@@ -37,19 +37,22 @@ input[type=file]{display:none}
   font-size:.95rem;
 }
 .btn.primary{border-color:#38bdf8}
+.btn.warn{border-color:#fbbf24}
 .btn.ok{border-color:#22c55e}
 .status{color:#a5b4fc;font-size:.9rem;margin-top:6px}
-#srcCanvas{display:none}
-#preview{
+.badge{padding:2px 8px;border-radius:999px;border:1px solid rgba(148,163,184,.7);font-size:.8rem;color:#a5b4fc;margin-left:4px}
+
+img.preview{
   max-width:100%;
   border-radius:10px;
   margin-top:10px;
   border:1px solid rgba(148,163,184,.3);
 }
-#patches{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
-.patch{border-radius:8px;border:1px solid rgba(148,163,184,.4);overflow:hidden;background:#0b1120}
-.patch canvas{display:block;max-width:150px;height:auto}
-.badge{padding:2px 8px;border-radius:999px;border:1px solid rgba(148,163,184,.7);font-size:.8rem;color:#a5b4fc;margin-left:4px}
+
+/* Canvases ocultos (procesamiento) */
+#srcCanvas, #detCanvas, #mosaicCanvas{
+  display:none;
+}
 </style>
 </head>
 
@@ -57,206 +60,200 @@ input[type=file]{display:none}
 
 <div class="wrap">
 
-<h1>Separación Automática de Parches Lila – Consumertec</h1>
-<p>Detector calibrado con tu manta real. Extrae cada parche lila y genera un mosaico descargable.</p>
+  <h1>Extracción de 16 cuadrados lila – Consumertec</h1>
+  <p>Sube la foto de la manta, detecta los parches lila y genera un mosaico 4×4 descargable.</p>
 
-<!-- PANEL -->
-<div class="card">
-  <div class="row">
-    <label class="btn primary">
-      <input id="fileInput" type="file" accept="image/*">
-      Subir imagen
-    </label>
-    <button id="btnProcess" class="btn">Procesar parches lila</button>
-    <button id="btnDownload" class="btn ok">Descargar mosaico</button>
-    <span id="info" class="badge">0 parches</span>
+  <!-- PANEL DE CONTROL -->
+  <div class="card">
+    <div class="row">
+      <label class="btn primary">
+        <input id="fileInput" type="file" accept="image/*">
+        Subir JPG
+      </label>
+      <button id="btnProcess" class="btn warn">Procesar (buscar 16)</button>
+      <button id="btnDownload" class="btn ok">Descargar mosaico</button>
+      <span id="info" class="badge">0 parches</span>
+    </div>
+    <div id="status" class="status">Estado: esperando imagen…</div>
   </div>
-  <div id="status" class="status">Estado: esperando imagen…</div>
-  <img id="preview" alt="Vista previa" />
+
+  <!-- VISTAS -->
+  <div class="card">
+    <h2 style="font-size:1.05rem;margin-top:0">Original</h2>
+    <img id="previewOrig" class="preview" alt="Imagen original" />
+  </div>
+
+  <div class="card">
+    <h2 style="font-size:1.05rem;margin-top:0">Mosaico 4×4 (hasta 16 parches lila)</h2>
+    <img id="previewMosaic" class="preview" alt="Mosaico 4×4" />
+  </div>
+
+  <!-- CANVAS OCULTOS -->
+  <canvas id="srcCanvas"></canvas>
+  <canvas id="detCanvas"></canvas>
+  <canvas id="mosaicCanvas"></canvas>
+
 </div>
-
-<!-- RESULTADOS -->
-<div class="card">
-  <h2 style="font-size:1.05rem;margin-top:0">Parches detectados</h2>
-  <div id="patches"></div>
-</div>
-
-<canvas id="srcCanvas"></canvas>
-
-</div>
-
 
 <!-- ======================== BRYTHON PYTHON ======================== -->
 <script type="text/python">
 from browser import document, html, window
 
-# DOM
-file_input   = document["fileInput"]
-btn_process  = document["btnProcess"]
-btn_download = document["btnDownload"]
-preview_el   = document["preview"]
-status_el    = document["status"]
-patches_el   = document["patches"]
-info_el      = document["info"]
+# ---------- Referencias DOM ----------
+file_input    = document["fileInput"]
+btn_process   = document["btnProcess"]
+btn_download  = document["btnDownload"]
+status_el     = document["status"]
+info_el       = document["info"]
+preview_orig  = document["previewOrig"]
+preview_mos   = document["previewMosaic"]
 
-src_canvas = document["srcCanvas"]
-src_ctx    = src_canvas.getContext("2d")
+src_canvas    = document["srcCanvas"]   # tamaño original
+src_ctx       = src_canvas.getContext("2d")
+det_canvas    = document["detCanvas"]   # imagen redimensionada para detección
+det_ctx       = det_canvas.getContext("2d")
+mos_canvas    = document["mosaicCanvas"]
+mos_ctx       = mos_canvas.getContext("2d")
 
-current_img = None
-image_ready = False
-patches_data = []   # aquí guardamos los parches para el botón Descargar
+image_ready   = False
+scale_factor  = 1.0   # original → detección
+image_name    = "imagen"
 
 
-def status(msg):
+def set_status(msg):
     status_el.text = "Estado: " + msg
 
 
-# ------------------- Cargar imagen ----------------------
+# ---------- Conversión RGB → HSV ----------
+def rgb_to_hsv(r, g, b):
+    r2 = r / 255.0
+    g2 = g / 255.0
+    b2 = b / 255.0
+    mx = max(r2, g2, b2)
+    mn = min(r2, g2, b2)
+    diff = mx - mn
+
+    if diff == 0:
+        h = 0.0
+    elif mx == r2:
+        h = (60.0 * ((g2 - b2) / diff) + 360.0) % 360.0
+    elif mx == g2:
+        h = (60.0 * ((b2 - r2) / diff) + 120.0) % 360.0
+    else:
+        h = (60.0 * ((r2 - g2) / diff) + 240.0) % 360.0
+
+    s = 0.0 if mx == 0.0 else diff / mx
+    v = mx
+    return h / 360.0, s, v   # H normalizado 0–1
+
+
+# ---------- Rangos Lila calibrados ----------
+def is_lila_strict(h, s, v):
+    # Rango estrecho, medido sobre DSC00442
+    return (0.878 <= h <= 0.938) and (0.18 <= s <= 0.38) and (0.42 <= v <= 0.70)
+
+
+def is_lila_relaxed(h, s, v):
+    # Rango extendido para cambios de luz
+    if (0.84 <= h <= 0.98) and (0.13 <= s <= 0.45) and (0.32 <= v <= 0.74):
+        return True
+    # Heurística extra: algo más azul que verde
+    # (suave para no atrapar los círculos amarillos)
+    return False
+
+
+# ---------- Carga de imagen ----------
 def on_file(ev):
-    global current_img, image_ready
+    global image_ready, scale_factor, image_name
     files = ev.target.files
     if not files:
-        status("No se seleccionó archivo.")
+        set_status("No se seleccionó archivo.")
         return
 
     f = files[0]
+    image_name = f.name or "imagen"
     reader = window.FileReader.new()
 
     def onload(e):
         img = html.IMG()
 
-        def onimg(_):
-            global current_img, image_ready
-            current_img = img
+        def onimg(_ev):
+            global image_ready, scale_factor
             image_ready = True
-            preview_el.src = img.src
 
-            w = img.naturalWidth
-            h = img.naturalHeight
-            src_canvas.width  = w
-            src_canvas.height = h
+            # Mostrar vista previa
+            preview_orig.src = img.src
+
+            # Canvas original
+            ow = img.naturalWidth
+            oh = img.naturalHeight
+            src_canvas.width  = ow
+            src_canvas.height = oh
             src_ctx.drawImage(img, 0, 0)
 
-            status(f"Imagen cargada ({w}×{h}).")
+            # Canvas de detección: ancho máximo 1600 px
+            max_det_w = 1600
+            if ow > max_det_w:
+                scale_factor = max_det_w / float(ow)
+            else:
+                scale_factor = 1.0
+
+            dw = int(ow * scale_factor)
+            dh = int(oh * scale_factor)
+            det_canvas.width  = dw
+            det_canvas.height = dh
+            det_ctx.drawImage(src_canvas, 0, 0, ow, oh, 0, 0, dw, dh)
+
+            set_status(f"Imagen cargada ({ow}×{oh}). Escala detección: {scale_factor:.3f}")
 
         img.bind("load", onimg)
         img.src = e.target.result
 
     reader.bind("load", onload)
     reader.readAsDataURL(f)
-    status("Cargando imagen…")
+    set_status("Cargando imagen…")
+
 
 file_input.bind("change", on_file)
 
 
-# ------------------- Conversión RGB → HSV ----------------------
-def rgb_to_hsv(r, g, b):
-    r2, g2, b2 = r/255, g/255, b/255
-    mx = max(r2, g2, b2)
-    mn = min(r2, g2, b2)
-    diff = mx - mn
+# ---------- Construir máscara lila ----------
+def build_mask(mode="strict"):
+    w = det_canvas.width
+    h = det_canvas.height
+    data = det_ctx.getImageData(0, 0, w, h).data
+    total = w * h
+    mask = [0] * total
+    count = 0
 
-    if diff == 0:
-        h = 0
-    elif mx == r2:
-        h = (60 * ((g2 - b2) / diff) + 360) % 360
-    elif mx == g2:
-        h = (60 * ((b2 - r2) / diff) + 120) % 360
-    else:
-        h = (60 * ((r2 - g2) / diff) + 240) % 360
-
-    s = 0 if mx == 0 else diff / mx
-    v = mx
-    return h/360, s, v   # normalizamos H a [0,1]
-
-
-# ------------------- Detector LILA / MORADO CALIBRADO ----------------------
-# Rangos medidos directamente sobre tu manta DSC00442.JPG
-
-# Rango "estricto": solo el lila de los parches
-def is_lila(r, g, b):
-    h, s, v = rgb_to_hsv(r, g, b)
-    # H: ~0.908 ± 0.03  (aprox 316°–337°)
-    # S: 0.18–0.38
-    # V: 0.42–0.70
-    if (0.878 <= h <= 0.938) and (0.18 <= s <= 0.38) and (0.42 <= v <= 0.70):
-        return True
-    return False
-
-
-# Rango "relajado": permite cambios de iluminación, pero sigue siendo lila
-def is_lila_relaxed(r, g, b):
-    h, s, v = rgb_to_hsv(r, g, b)
-    # Hue algo más amplio + S,V algo más amplios
-    if (0.84 <= h <= 0.98) and (0.13 <= s <= 0.45) and (0.32 <= v <= 0.74):
-        return True
-
-    # Heurística extra por si el balance de blancos cambia:
-    # más azul que verde y rojo moderado
-    if (b > g + 10) and (b >= r - 5):
-        return True
-
-    return False
-
-
-# ------------------- Procesar ----------------------
-def process(ev):
-    global patches_data
-
-    if not image_ready:
-        window.alert("Primero sube una imagen.")
-        return
-
-    patches_el.clear()
-    patches_data = []
-
-    w = src_canvas.width
-    h = src_canvas.height
-    data = src_ctx.getImageData(0, 0, w, h).data
-
-    mask = [0] * (w * h)
-    count_strict = 0
-    count_relaxed = 0
-
-    # Primera pasada: rango estricto
     for y in range(h):
+        base_y = y * w
         for x in range(w):
-            idx = y * w + x
-            p   = idx * 4
+            idx = base_y + x
+            p = idx * 4
             r = data[p]
-            g = data[p+1]
-            b = data[p+2]
-            if is_lila(r, g, b):
+            g = data[p + 1]
+            b = data[p + 2]
+            h_norm, s, v = rgb_to_hsv(r, g, b)
+
+            if mode == "strict":
+                ok = is_lila_strict(h_norm, s, v)
+            else:
+                ok = is_lila_strict(h_norm, s, v) or is_lila_relaxed(h_norm, s, v)
+
+            if ok:
                 mask[idx] = 1
-                count_strict += 1
+                count += 1
 
-    # Si no encuentra nada, pasamos a rango extendido
-    if count_strict == 0:
-        status("Sin éxito en rango estricto. Activando modo relajado…")
-        for y in range(h):
-            for x in range(w):
-                idx = y * w + x
-                p   = idx * 4
-                r = data[p]
-                g = data[p+1]
-                b = data[p+2]
-                if is_lila_relaxed(r, g, b):
-                    mask[idx] = 1
-                    count_relaxed += 1
+    return mask, count, w, h
 
-        if count_relaxed == 0:
-            info_el.text = "0 parches"
-            status("No se detectaron parches morados (ni con rango relajado).")
-            return
-        else:
-            status(f"Píxeles lila detectados (relajado): {count_relaxed}")
-    else:
-        status(f"Píxeles lila detectados (estricto): {count_strict}")
 
-    # BFS para agrupar píxeles en parches
+# ---------- BFS para buscar parches ----------
+def find_patches(mask, w, h):
     visited = [0] * (w * h)
-    dirs = [(1,0), (-1,0), (0,1), (0,-1)]
     patches = []
+    total_area = w * h
+    min_area = int(0.0001 * total_area)  # umbral mínimo de área
 
     for y in range(h):
         for x in range(w):
@@ -264,6 +261,7 @@ def process(ev):
             if mask[idx0] == 0 or visited[idx0] == 1:
                 continue
 
+            # BFS
             q = [(x, y)]
             visited[idx0] = 1
             minx = maxx = x
@@ -278,106 +276,180 @@ def process(ev):
                 if cy < miny: miny = cy
                 if cy > maxy: maxy = cy
 
-                for dx, dy in dirs:
-                    nx, ny = cx + dx, cy + dy
+                for dx, dy in ((1,0),(-1,0),(0,1),(0,-1)):
+                    nx = cx + dx
+                    ny = cy + dy
                     if 0 <= nx < w and 0 <= ny < h:
-                        idxn = ny * w + nx
-                        if mask[idxn] == 1 and visited[idxn] == 0:
-                            visited[idxn] = 1
+                        ni = ny * w + nx
+                        if mask[ni] == 1 and visited[ni] == 0:
+                            visited[ni] = 1
                             q.append((nx, ny))
 
-            # Área mínima para descartar ruido
-            if area > 200:
-                patches.append((minx, miny, maxx, maxy, area))
+            if area < min_area:
+                continue
+
+            bw = maxx - minx + 1
+            bh = maxy - miny + 1
+            if bh <= 0:
+                continue
+            ar = bw / float(bh)
+            # Rectángulos razonables (ni líneas, ni bloques enormes)
+            if ar < 0.7 or ar > 4.5:
+                continue
+
+            patches.append((minx, miny, maxx, maxy, area))
+
+    return patches
+
+
+# ---------- Conversión de parches a coordenadas originales ----------
+def detection_to_original_bbox(patch, padding=8):
+    minx, miny, maxx, maxy, area = patch
+    ow = src_canvas.width
+    oh = src_canvas.height
+    dw = det_canvas.width
+    dh = det_canvas.height
+
+    # Factor original ← detección
+    if dw == 0:
+        return None
+    inv = ow / float(dw)  # ~1/scale_factor
+
+    x0 = int(max(0, (minx * inv) - padding))
+    x1 = int(min(ow, (maxx + 1) * inv + padding))
+    y0 = int(max(0, (miny * inv) - padding))
+    y1 = int(min(oh, (maxy + 1) * inv + padding))
+
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return (x0, y0, x1, y1)
+
+
+# ---------- Construir mosaico 4×4 ----------
+def build_mosaic_from_patches(patches_src):
+    n = len(patches_src)
+    if n == 0:
+        mos_canvas.width = 600
+        mos_canvas.height = 400
+        mos_ctx.fillStyle = "#111827"
+        mos_ctx.fillRect(0, 0, mos_canvas.width, mos_canvas.height)
+        return
+
+    n_use = min(16, n)
+    patches_src = patches_src[:n_use]
+
+    widths = []
+    heights = []
+    for (x0, y0, x1, y1) in patches_src:
+        widths.append(x1 - x0)
+        heights.append(y1 - y0)
+
+    widths.sort()
+    heights.sort()
+    mw = widths[len(widths)//2]
+    mh = heights[len(heights)//2]
+
+    # Tamaño base de cada celda
+    cell_w = max(80, int(mw))
+    cell_h = max(80, int(mh))
+
+    rows = 4
+    cols = 4
+    margin = 12
+
+    mos_w = cols * cell_w + (cols + 1) * margin
+    mos_h = rows * cell_h + (rows + 1) * margin
+
+    mos_canvas.width  = mos_w
+    mos_canvas.height = mos_h
+
+    mos_ctx.fillStyle = "#0b1120"
+    mos_ctx.fillRect(0, 0, mos_w, mos_h)
+
+    idx = 0
+    for r in range(rows):
+        for c in range(cols):
+            if idx >= n_use:
+                break
+            x0, y0, x1, y1 = patches_src[idx]
+            pw = x1 - x0
+            ph = y1 - y0
+
+            dest_x = margin + c * (cell_w + margin)
+            dest_y = margin + r * (cell_h + margin)
+
+            mos_ctx.drawImage(
+                src_canvas,
+                x0, y0, pw, ph,
+                dest_x, dest_y, cell_w, cell_h
+            )
+            idx += 1
+
+
+# ---------- Procesar imagen ----------
+def process(ev):
+    if not image_ready:
+        window.alert("Primero sube un JPG.")
+        return
+
+    set_status("Procesando (rango estricto)…")
+    mask, count, w, h = build_mask(mode="strict")
+    patches = find_patches(mask, w, h)
+
+    if len(patches) < 16:
+        set_status(f"Encontrados {len(patches)} parches en estricto. Probando rango relajado…")
+        mask_rel, count_rel, w, h = build_mask(mode="relaxed")
+        patches = find_patches(mask_rel, w, h)
 
     if not patches:
         info_el.text = "0 parches"
-        status("No hubo parches lila suficientemente grandes.")
+        set_status("No se detectaron parches lila.")
+        preview_mos.src = ""
         return
 
-    # Ordenar parches de arriba a abajo, izquierda a derecha
-    patches.sort(key=lambda p: (p[1], p[0]))
+    # Ordenar por centro (fila, columna)
+    patches.sort(key=lambda p: ( (p[1]+p[3])/2.0, (p[0]+p[2])/2.0 ))
 
-    # Dibujar miniaturas
-    for i, (minx, miny, maxx, maxy, area) in enumerate(patches, start=1):
-        pw = maxx - minx + 1
-        ph = maxy - miny + 1
+    # Pasar a coordenadas del canvas original
+    patches_src = []
+    for patch in patches:
+        bbox = detection_to_original_bbox(patch, padding=8)
+        if bbox is not None:
+            patches_src.append(bbox)
 
-        c = html.CANVAS()
-        c.width  = pw
-        c.height = ph
-        ctx = c.getContext("2d")
-        ctx.drawImage(src_canvas, minx, miny, pw, ph, 0, 0, pw, ph)
+    if not patches_src:
+        info_el.text = "0 parches"
+        set_status("Los parches detectados no son válidos en el original.")
+        preview_mos.src = ""
+        return
 
-        box = html.DIV(Class="patch")
-        box <= c
-        box <= html.DIV(
-            f"#{i} — {pw}×{ph}, área≈{area}",
-            style={"font-size": "0.75rem", "color": "#9ca3af", "padding": "2px 6px"}
-        )
-        patches_el <= box
+    # Construir mosaico
+    build_mosaic_from_patches(patches_src)
 
-    patches_data = patches
-    info_el.text = f"{len(patches)} parches"
-    status(f"Detectados {len(patches)} parches lila.")
+    # Vista previa del mosaico
+    data_url = mos_canvas.toDataURL("image/png")
+    preview_mos.src = data_url
+
+    n_use = min(16, len(patches_src))
+    info_el.text = f"{n_use} parches usados (de {len(patches_src)})"
+    set_status("Mosaico 4×4 generado.")
 
 
 btn_process.bind("click", process)
 
 
-# ------------------- Descargar mosaico ----------------------
+# ---------- Descargar mosaico ----------
 def download(ev):
-    global patches_data
-    if not patches_data:
-        window.alert("Primero pulsa 'Procesar parches lila'.")
+    if mos_canvas.width == 0 or mos_canvas.height == 0:
+        window.alert("No hay mosaico para descargar. Pulsa primero ‘Procesar’.")
         return
 
-    # Organizamos en filas de 4 parches
-    rows = []
-    row  = []
-    max_h = 0
-
-    for i, p in enumerate(patches_data):
-        minx, miny, maxx, maxy, area = p
-        pw = maxx - minx + 1
-        ph = maxy - miny + 1
-        row.append((minx, miny, pw, ph))
-        if ph > max_h:
-            max_h = ph
-
-        if (i + 1) % 4 == 0:
-            rows.append((row, max_h))
-            row = []
-            max_h = 0
-
-    if row:
-        rows.append((row, max_h))
-
-    total_w = 0
-    total_h = 0
-    for r, hh in rows:
-        rw = sum([pw for _, _, pw, _ in r])
-        total_h += hh
-        if rw > total_w:
-            total_w = rw
-
-    out = html.CANVAS()
-    out.width  = total_w
-    out.height = total_h
-    octx = out.getContext("2d")
-
-    yoff = 0
-    for r, hh in rows:
-        xoff = 0
-        for minx, miny, pw, ph in r:
-            octx.drawImage(src_canvas, minx, miny, pw, ph, xoff, yoff, pw, ph)
-            xoff += pw
-        yoff += hh
-
     a = html.A()
-    a.download = "mosaico_lila.png"
-    a.href     = out.toDataURL("image/png")
+    base = image_name.rsplit(".", 1)[0]
+    a.download = f"{base}_mosaico_16_lila.png"
+    a.href = mos_canvas.toDataURL("image/png")
     a.click()
+
 
 btn_download.bind("click", download)
 </script>
